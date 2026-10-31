@@ -1,0 +1,156 @@
+{
+  "key": "tcc",
+  "version": 1,
+  "title": "Trabalho de Conclusão de Curso (TCC)",
+  "phases": [
+    { "key": "ideia", "label": "Ideia", "order": 1 },
+    { "key": "base", "label": "Base Teórica", "order": 2 },
+    { "key": "planejar", "label": "Planejamento", "order": 3 },
+    { "key": "metodo", "label": "Método", "order": 4 },
+    { "key": "analise", "label": "Análise", "order": 5 },
+    { "key": "escrita", "label": "Escrita", "order": 6 },
+    { "key": "defesa", "label": "Defesa", "order": 7 }
+  ],
+  "nodes": [
+    {
+      "key": "tema_delimitacao",
+      "phase": "ideia",
+      "title": "Delimitação do Tema",
+      "description": "Definir a área de conhecimento e o recorte espacial, temporal e conceitual do trabalho.",
+      "prerequisites": [],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["problema_pesquisa"],
+      "gate_criteria": "O tema deve ter delimitação clara e viabilidade de execução dentro do prazo estipulado."
+    },
+    {
+      "key": "problema_pesquisa",
+      "phase": "ideia",
+      "title": "Problema de Pesquisa",
+      "description": "Formular a questão central orientadora do trabalho em forma de pergunta precisa.",
+      "prerequisites": ["tema_delimitacao"],
+      "typical_time": "1 semana",
+      "unlocks": ["objetivos", "justificativa"],
+      "gate_criteria": "A pergunta deve ser investigável, sem respostas triviais de sim/não e conceitualmente bem fundamentada."
+    },
+    {
+      "key": "objetivos",
+      "phase": "ideia",
+      "title": "Objetivos Geral e Específicos",
+      "description": "Definir o que o trabalho pretende alcançar no plano global e nas etapas operacionais.",
+      "prerequisites": ["problema_pesquisa"],
+      "typical_time": "1 semana",
+      "unlocks": ["justificativa", "busca_bibliografica"],
+      "gate_criteria": "Objetivos formulados com verbos no infinitivo (analisar, verificar, comparar) correspondentes à complexidade."
+    },
+    {
+      "key": "justificativa",
+      "phase": "ideia",
+      "title": "Justificativa e Relevância",
+      "description": "Demonstrar a relevância científica, social e prática da investigação.",
+      "prerequisites": ["problema_pesquisa"],
+      "typical_time": "1 semana",
+      "unlocks": ["cronograma_atividades"],
+      "gate_criteria": "Apresentação clara dos motivos da escolha e do valor dos resultados para a comunidade."
+    },
+    {
+      "key": "busca_bibliografica",
+      "phase": "base",
+      "title": "Mapeamento da Literatura",
+      "description": "Coletar artigos e livros fundamentais das principais bases com DOIs verificados.",
+      "prerequisites": ["objetivos"],
+      "typical_time": "2 a 3 semanas",
+      "unlocks": ["marco_teorico"],
+      "gate_criteria": "Pelo menos 10 a 20 referências relevantes de periódicos conceituados mapeadas."
+    },
+    {
+      "key": "marco_teorico",
+      "phase": "base",
+      "title": "Referencial Teórico",
+      "description": "Sintetizar conceitos-chave e contrapor autores da área sustentados por citações literais.",
+      "prerequisites": ["busca_bibliografica"],
+      "typical_time": "3 a 4 semanas",
+      "unlocks": ["abordagem_metodologica"],
+      "gate_criteria": "Mapa de conhecimento conectado com afirmações verificadas e diálogo crítico entre autores."
+    },
+    {
+      "key": "cronograma_atividades",
+      "phase": "planejar",
+      "title": "Cronograma e Recursos",
+      "description": "Distribuição temporal das etapas em semanas com estimativa de dedicação horária.",
+      "prerequisites": ["justificativa"],
+      "typical_time": "1 semana",
+      "unlocks": ["abordagem_metodologica"],
+      "gate_criteria": "Cronograma compatível com a data final e folga para revisões e imprevistos."
+    },
+    {
+      "key": "abordagem_metodologica",
+      "phase": "metodo",
+      "title": "Abordagem Metodológica",
+      "description": "Classificação da pesquisa quanto aos fins, meios e natureza (qualitativa/quantitativa).",
+      "prerequisites": ["marco_teorico", "cronograma_atividades"],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["coleta_dados"],
+      "gate_criteria": "Adequação estrita entre o método escolhido e a resolução do problema de pesquisa."
+    },
+    {
+      "key": "coleta_dados",
+      "phase": "metodo",
+      "title": "Coleta e Produção de Dados",
+      "description": "Aplicação dos instrumentos (questionários, entrevistas, experimentos ou corpus documental).",
+      "prerequisites": ["abordagem_metodologica"],
+      "typical_time": "3 a 5 semanas",
+      "unlocks": ["organizacao_dados"],
+      "gate_criteria": "Protocolo de coleta documentado com transparência e reprodutibilidade."
+    },
+    {
+      "key": "organizacao_dados",
+      "phase": "analise",
+      "title": "Tratamento dos Dados",
+      "description": "Organização, tabulação ou categorização dos dados obtidos.",
+      "prerequisites": ["coleta_dados"],
+      "typical_time": "2 semanas",
+      "unlocks": ["discussao_resultados"],
+      "gate_criteria": "Dados estruturados de forma coerente e preparados para a etapa de interpretação."
+    },
+    {
+      "key": "discussao_resultados",
+      "phase": "analise",
+      "title": "Discussão dos Resultados",
+      "description": "Interpretar os achados relacionando-os com o referencial teórico e objetivos.",
+      "prerequisites": ["organizacao_dados"],
+      "typical_time": "3 a 4 semanas",
+      "unlocks": ["redacao_conclusao"],
+      "gate_criteria": "Os resultados respondem concretamente ao problema formulado sem extrapolações infundadas."
+    },
+    {
+      "key": "redacao_conclusao",
+      "phase": "escrita",
+      "title": "Considerações Finais e Lacunas",
+      "description": "Síntese das contribuições, limitações do estudo e proposição de pesquisas futuras.",
+      "prerequisites": ["discussao_resultados"],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["revisao_abnt"],
+      "gate_criteria": "Conclusão coerente com os objetivos, apontando lacunas reais identificadas."
+    },
+    {
+      "key": "revisao_abnt",
+      "phase": "defesa",
+      "title": "Normalização ABNT e Revisão",
+      "description": "Formatação segundo as normas vigentes, conferência de citações e referências cruzadas.",
+      "prerequisites": ["redacao_conclusao"],
+      "typical_time": "1 semana",
+      "unlocks": ["preparacao_defesa"],
+      "gate_criteria": "Estrutura formal completa: elementos pré-textuais, textuais e pós-textuais conformes."
+    },
+    {
+      "key": "preparacao_defesa",
+      "phase": "defesa",
+      "title": "Preparação para a Banca",
+      "description": "Roteiro de apresentação em slides e simulação de arguição acadêmica.",
+      "prerequisites": ["revisao_abnt"],
+      "typical_time": "1 semana",
+      "unlocks": [],
+      "gate_criteria": "Domínio seguro da exposição dentro do limite de tempo regulamentar da banca examinadora."
+    }
+  ]
+}

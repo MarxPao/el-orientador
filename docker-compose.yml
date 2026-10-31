@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: orientador-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-orientador}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-orientador_secret_pass_123}
+      POSTGRES_DB: ${DB_NAME:-orientador_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orientador -d orientador_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: services/pipeline/Dockerfile
+    container_name: orientador-pipeline
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-orientador}:${DB_PASSWORD:-orientador_secret_pass_123}@postgres:5432/${DB_NAME:-orientador_db}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-key-with-minimum-32-characters-el-orientador}
+      STORAGE_DIR: /app/storage
+      WEB_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.0-flash}
+      DEMO_SEED: ${DEMO_SEED:-0}
+      ENV: production
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage_data:/app/storage
+      - ./prompts:/prompts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: orientador-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - pipeline
+
+volumes:
+  postgres_data:
+  storage_data:

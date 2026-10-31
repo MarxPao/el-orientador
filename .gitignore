@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+.env
+out/
+prototype/data/pdfs/*.pdf
+node_modules/
+storage/

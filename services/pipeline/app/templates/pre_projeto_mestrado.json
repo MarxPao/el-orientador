@@ -1,0 +1,126 @@
+{
+  "key": "pre_projeto_mestrado",
+  "version": 1,
+  "title": "Pré-Projeto de Mestrado",
+  "phases": [
+    { "key": "ideia", "label": "Ideia e Recorte", "order": 1 },
+    { "key": "base", "label": "Estado da Arte", "order": 2 },
+    { "key": "planejar", "label": "Aderência e Linha", "order": 3 },
+    { "key": "metodo", "label": "Metodologia Proposta", "order": 4 },
+    { "key": "viabilidade", "label": "Viabilidade e Prazos", "order": 5 },
+    { "key": "escrita", "label": "Redação Final", "order": 6 },
+    { "key": "submissao", "label": "Submissão ao PPG", "order": 7 }
+  ],
+  "nodes": [
+    {
+      "key": "tema_pos",
+      "phase": "ideia",
+      "title": "Delimitação do Objeto",
+      "description": "Definir com profundidade o objeto de pesquisa e o campo teórico em que se insere.",
+      "prerequisites": [],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["problema_pesquisa_pos"],
+      "gate_criteria": "Tema alinhado às discussões contemporâneas da área e passível de aprofundamento em nível stricto sensu."
+    },
+    {
+      "key": "problema_pesquisa_pos",
+      "phase": "ideia",
+      "title": "Problema e Lacuna Científica",
+      "description": "Articular a pergunta de pesquisa a partir de uma lacuna real não respondida na bibliografia.",
+      "prerequisites": ["tema_pos"],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["hipoteses_objetivos"],
+      "gate_criteria": "Apresentação explícita de onde a literatura atual silencia ou diverge, justificando a investigação."
+    },
+    {
+      "key": "hipoteses_objetivos",
+      "phase": "ideia",
+      "title": "Hipóteses e Objetivos",
+      "description": "Proposição de hipóteses testáveis ou premissas norteadoras e objetivos claros.",
+      "prerequisites": ["problema_pesquisa_pos"],
+      "typical_time": "1 semana",
+      "unlocks": ["estado_da_arte"],
+      "gate_criteria": "Alinhamento lógico perfeito entre a questão de partida e os desdobramentos operacionais propostos."
+    },
+    {
+      "key": "estado_da_arte",
+      "phase": "base",
+      "title": "Revisão do Estado da Arte",
+      "description": "Levantamento sistemático da produção nacional e internacional recente (últimos 5 anos).",
+      "prerequisites": ["hipoteses_objetivos"],
+      "typical_time": "3 a 4 semanas",
+      "unlocks": ["marco_conceitual"],
+      "gate_criteria": "Mapeamento em bases indexadas (Scopus, WoS, SciELO) com critérios explícitos de inclusão/exclusão."
+    },
+    {
+      "key": "marco_conceitual",
+      "phase": "base",
+      "title": "Quadro Teórico-Conceitual",
+      "description": "Definição do aporte epistemológico e das categorias analíticas basilares do projeto.",
+      "prerequisites": ["estado_da_arte"],
+      "typical_time": "2 a 3 semanas",
+      "unlocks": ["aderencia_linha"],
+      "gate_criteria": "Coerência teórica rigorosa sem justaposição acrítica de autores conflitantes."
+    },
+    {
+      "key": "aderencia_linha",
+      "phase": "planejar",
+      "title": "Aderência à Linha de Pesquisa",
+      "description": "Conexão explícita com a ementa do programa de pós-graduação e projetos dos docentes.",
+      "prerequisites": ["marco_conceitual"],
+      "typical_time": "1 semana",
+      "unlocks": ["metodologia_proposta"],
+      "gate_criteria": "Demonstração de pertinência do projeto ao corpo docente e às linhas do edital visado."
+    },
+    {
+      "key": "metodologia_proposta",
+      "phase": "metodo",
+      "title": "Delineamento Metodológico",
+      "description": "Detalhamento de fontes, universo amostral, instrumentos de pesquisa e procedimentos éticos.",
+      "prerequisites": ["aderencia_linha"],
+      "typical_time": "2 a 3 semanas",
+      "unlocks": ["analise_prevista"],
+      "gate_criteria": "Viabilidade metodológica detalhada demonstrando domínio das técnicas necessárias."
+    },
+    {
+      "key": "analise_prevista",
+      "phase": "metodo",
+      "title": "Plano de Análise de Dados",
+      "description": "Técnicas de análise pretendidas (estatística, análise de conteúdo, hermenêutica etc.).",
+      "prerequisites": ["metodologia_proposta"],
+      "typical_time": "1 a 2 semanas",
+      "unlocks": ["cronograma_24m"],
+      "gate_criteria": "Especificação clara do tratamento dos dados obtidos condizente com a metodologia."
+    },
+    {
+      "key": "cronograma_24m",
+      "phase": "viabilidade",
+      "title": "Cronograma de 24 Meses",
+      "description": "Distribuição trimestral das disciplinas, qualificação, coleta, redação e defesa.",
+      "prerequisites": ["analise_prevista"],
+      "typical_time": "1 semana",
+      "unlocks": ["redacao_projeto"],
+      "gate_criteria": "Planejamento temporal viável dentro do limite regulamentar do mestrado (24 meses)."
+    },
+    {
+      "key": "redacao_projeto",
+      "phase": "escrita",
+      "title": "Redação e Articulação",
+      "description": "Redação coesa segundo o limite de páginas e normas do edital específico do PPG.",
+      "prerequisites": ["cronograma_24m"],
+      "typical_time": "2 a 3 semanas",
+      "unlocks": ["conferencia_edital"],
+      "gate_criteria": "Linguagem acadêmica sóbria, densidade conceitual e respeito absoluto às normas do edital."
+    },
+    {
+      "key": "conferencia_edital",
+      "phase": "submissao",
+      "title": "Checklist do Edital de Seleção",
+      "description": "Conferência de documentação (currículo Lattes, memorial, projeto anônimo quando exigido).",
+      "prerequisites": ["redacao_projeto"],
+      "typical_time": "1 semana",
+      "unlocks": [],
+      "gate_criteria": "Todos os requisitos formais de submissão do edital rigorosamente atendidos."
+    }
+  ]
+}

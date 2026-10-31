@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* Brand tokens: manual de marca v2 (rascunho) and docs/04-UX-SPEC.md.
+   Red = brand only (logo). Purple = interface and the advisor's questions.
+   Orange = highlighter / fill, never text. */
+:root {
+  --ink: #241e1a;
+  --paper: #f6eedc;
+  --brand-red: #b3261e;
+  --orange: #e8761e;
+  --purple: #4b2a7b;
+  --done: #5f6e2f; /* oliva: concluído */
+  --available: #4b2a7b; /* roxo: ação principal, links, foco (interface) */
+  --locked: #6f665d; /* cinza quente: bloqueado, texto secundário */
+  --gap: #4b2a7b; /* lacuna: roxo pontilhado, com ícone e rótulo */
+  --danger: #b3261e; /* erro: sempre com ícone/texto, nunca só cor */
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-brand-red: var(--brand-red);
+  --color-orange: var(--orange);
+  --color-purple: var(--purple);
+  --color-done: var(--done);
+  --color-available: var(--available);
+  --color-locked: var(--locked);
+  --color-gap: var(--gap);
+  --color-danger: var(--danger);
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.font-serif-academic {
+  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+}
+
+/* Provisional signboard face for the wordmark; replace once a licensed face is chosen. */
+.font-letreiro {
+  font-family: "Alfa Slab One", "Rockwell", "Roboto Slab", Georgia, serif;
+  letter-spacing: 0.02em;
+}
+
+/* Highlighter on the passage being worked on: ink text over orange (5.52:1). */
+mark {
+  background: color-mix(in srgb, var(--orange) 55%, transparent);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
