@@ -95,7 +95,7 @@ def setup_demo_data() -> tuple[str, str]:
                 client.post(
                     f"/projects/{pid}/sections/{sec0['id']}/comments",
                     json={
-                        "content": "Qual trecho da sua bibliografia sustenta a relação direta entre mediação pedagógica e redução da evasão neste parágrafo?"
+                        "content": '[Trecho em revisão: "Ao articular os conceitos prévios à mediação pedagógica estruturada"]\nQual trecho da sua bibliografia sustenta a relação direta entre mediação pedagógica e redução da evasão neste parágrafo?'
                     },
                     headers=headers,
                 )
@@ -225,14 +225,18 @@ def capture_all():
             time.sleep(1.2)
             save_shot(page, "08_painel_evidencia.png")
 
-        # 9. Editor Acadêmico (/projetos/[id]/editor) - Aba Coerência
+        # 9. Editor Acadêmico (/projetos/[id]/editor) - Aba Coerência + @Citar fonte
         print("9. Capturando 09_manuscrito_editor.png...")
         page.goto(f"{BASE_URL}/projetos/{pid}/editor", wait_until="networkidle")
         page.wait_for_selector(".tiptap, [contenteditable='true']", timeout=15000)
-        time.sleep(1.5)
+        time.sleep(1.2)
+        cite_btn = page.query_selector("button:has-text('@ Citar fonte')")
+        if cite_btn:
+            cite_btn.click()
+            time.sleep(0.6)
         save_shot(page, "09_manuscrito_editor.png")
 
-        # 10. Editor com Aba de Comentários do Orientador
+        # 10. Editor com Aba de Comentários do Orientador (com trecho grifado em laranja)
         print("10. Capturando 10_editor_comentarios.png...")
         comments_tab = page.query_selector("button:has-text('Comentários')")
         if comments_tab:
@@ -244,11 +248,26 @@ def capture_all():
         print("11. Capturando 11_relatorio_orientador.png...")
         page.goto(f"{BASE_URL}/projetos/{pid}/relatorio", wait_until="networkidle")
         page.wait_for_selector("text=Relatório de progresso para orientação", timeout=15000)
-        time.sleep(1.5)
+        time.sleep(1.2)
+        share_btn = page.query_selector("button:has-text('Compartilhar link com orientador')")
+        if share_btn:
+            share_btn.click()
+            time.sleep(0.8)
         save_shot(page, "11_relatorio_orientador.png", full_page=True)
 
+        # 12. Modo Orientador Humano via Link Mágico (/orientador/[token])
+        print("12. Capturando 12_modo_orientador_link.png...")
+        share_link_el = page.query_selector("a:has-text('Abrir visão do orientador')")
+        if share_link_el:
+            href = share_link_el.get_attribute("href")
+            if href:
+                page.goto(f"{BASE_URL}{href}", wait_until="networkidle")
+                page.wait_for_selector("text=Revisão do Orientador Humano", timeout=15000)
+                time.sleep(1.2)
+                save_shot(page, "12_modo_orientador_link.png", full_page=True)
+
         browser.close()
-        print("\nTodas as 11 capturas foram geradas com sucesso em:", OUTPUT_DIR)
+        print("\nTodas as capturas foram geradas com sucesso em:", OUTPUT_DIR)
 
 
 if __name__ == "__main__":

@@ -389,12 +389,15 @@ export default function AdvisorShareView({ token }: { token: string }) {
                       Nenhuma pergunta registrada nesta seção ainda.
                     </p>
                   ) : (
-                    activeSection.comments.map((c) => {
+                    activeSection.comments.map((c, idx) => {
                       const parsed = parseAnchoredComment(c.content);
-                      const isStudent = c.author_email.includes("demo") || c.author_email.includes("estudante");
-                      const label = isStudent
-                        ? `Orientando · ${c.author_name || c.author_email}`
-                        : `Orientador · ${c.author_name || c.author_email}`;
+                      const isAdvisor =
+                        idx === 0 ||
+                        (!c.author_email.includes("demo") &&
+                          !c.author_email.includes("estudante"));
+                      const label = isAdvisor
+                        ? `Orientador · ${c.author_name || c.author_email}`
+                        : `Orientando · ${c.author_name || c.author_email}`;
 
                       return (
                         <div key={c.id} className="space-y-1">
@@ -408,14 +411,14 @@ export default function AdvisorShareView({ token }: { token: string }) {
                               </mark>
                             </div>
                           )}
-                          {isStudent ? (
-                            <StudentCard label={label}>
-                              <p className="whitespace-pre-wrap">{parsed.body}</p>
-                            </StudentCard>
-                          ) : (
+                          {isAdvisor ? (
                             <AdvisorBubble label={label}>
                               <p className="whitespace-pre-wrap">{parsed.body}</p>
                             </AdvisorBubble>
+                          ) : (
+                            <StudentCard label={label}>
+                              <p className="whitespace-pre-wrap">{parsed.body}</p>
+                            </StudentCard>
                           )}
                         </div>
                       );
