@@ -19,6 +19,7 @@ import {
   ProjectClaim,
   Section,
   SectionComment,
+  ValidateAuthenticityResponse,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
 import {
@@ -31,7 +32,70 @@ import {
   StudentCard,
 } from "@/components/ui";
 
-type AutonomyMode = "socratic" | "polish" | "draft";
+type AutonomyMode = "socratic" | "polish" | "coauthor" | "draft";
+
+function getGradientZoneMeta(intensity: number): {
+  mode: AutonomyMode;
+  zoneTitle: string;
+  badgeText: string;
+  badgeClass: string;
+  description: string;
+  buttonLabel: string;
+} {
+  if (intensity <= 15) {
+    return {
+      mode: "socratic",
+      zoneTitle: "Zona 1 · Orientador Socrático Puro (0–15%)",
+      badgeText: "Isento · 0% IA no texto",
+      badgeClass: "bg-done text-paper",
+      description:
+        "A IA nunca escreve nem altera seu texto: atua apenas com perguntas socráticas e verificação de evidências.",
+      buttonLabel: "Modo Socrático Ativo",
+    };
+  }
+  if (intensity <= 35) {
+    return {
+      mode: "polish",
+      zoneTitle: "Zona 2 · Revisão Ortográfica e Gramatical Estrita (16–35%)",
+      badgeText: "Isento COPE/ICMJE",
+      badgeClass: "bg-done text-paper",
+      description:
+        "Corrige apenas ortografia, pontuação e concordância sem trocar seu vocabulário nem reestruturar períodos.",
+      buttonLabel: `Revisar ortografia (${intensity}%)`,
+    };
+  }
+  if (intensity <= 60) {
+    return {
+      mode: "polish",
+      zoneTitle: "Zona 3 · Lapidação de Estilo Acadêmico (36–60%)",
+      badgeText: "Revisão Leve · Isento",
+      badgeClass: "bg-purple text-paper",
+      description:
+        "Aprimora coesão, voz impessoal e norma culta científica preservando 100% das suas ideias e argumentos.",
+      buttonLabel: `Lapidar estilo acadêmico (${intensity}%)`,
+    };
+  }
+  if (intensity <= 80) {
+    return {
+      mode: "coauthor",
+      zoneTitle: "Zona 4 · Co-escrita Híbrida com Evidência (61–80%)",
+      badgeText: "Híbrido · Declara coautoria",
+      badgeClass: "bg-orange text-ink",
+      description:
+        "Preserva sua frase inicial (tópico frasal) e costura 1 citação literal verificada (quote + página) do projeto.",
+      buttonLabel: `Expandir minha frase com fonte (${intensity}%)`,
+    };
+  }
+  return {
+    mode: "draft",
+    zoneTitle: "Zona 5 · Redação Guiada por Evidências Verificadas (81–100%)",
+    badgeText: "Declaração Obrigatória ABNT",
+    badgeClass: "bg-orange text-ink",
+    description:
+      "Redige um parágrafo acadêmico completo articulando exclusivamente as citações literais verificadas da seção.",
+    buttonLabel: `Redigir parágrafo com fontes (${intensity}%)`,
+  };
+}
 
 const DEFAULT_PRISM: AuthorshipPrism = {
   total_words: 0,
@@ -90,12 +154,25 @@ export default function EditorView({ id }: { id: string }) {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [advisorEmail, setAdvisorEmail] = useState("");
   const [advisors, setAdvisors] = useState<AdvisorMember[]>([]);
-  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("socratic");
+  const [autonomyIntensity, setAutonomyIntensity] = useState<number>(0);
   const [prism, setPrism] = useState<AuthorshipPrism>(DEFAULT_PRISM);
+  const [sectionPrisms, setSectionPrisms] = useState<Record<string, AuthorshipPrism>>({});
+  const [showForensicPanel, setShowForensicPanel] = useState<boolean>(false);
+  const [validatingForensics, setValidatingForensics] = useState<boolean>(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [omitDeclaration, setOmitDeclaration] = useState(false);
+
+  const activeZone = useMemo(
+    () => getGradientZoneMeta(autonomyIntensity),
+    [autonomyIntensity]
+  );
+
+  function handleIntensityChange(nextVal: number) {
+    const clamped = Math.max(0, Math.min(100, nextVal));
+    setAutonomyIntensity(clamped);
+  }
 
   const activeSection = useMemo(
     () => sections.find((s) => s.id === selectedSectionId) ?? null,
@@ -113,6 +190,7 @@ export default function EditorView({ id }: { id: string }) {
       setCoherence(cohData);
       if (authData?.project) {
         setPrism(authData.project);
+        setSectionPrisms(authData.sections || {});
       }
     } catch {
       // Quiet
@@ -178,6 +256,7 @@ export default function EditorView({ id }: { id: string }) {
         setClaims(claimsData);
         if (authData?.project) {
           setPrism(authData.project);
+          setSectionPrisms(authData.sections || {});
         }
         if (secData.length > 0 && !selectedSectionId) {
           setSelectedSectionId(secData[0].id);
@@ -411,8 +490,18 @@ export default function EditorView({ id }: { id: string }) {
     }
   }
 
-  async function handleRunAiAssist(mode: "polish" | "draft") {
+  async function handleRunAiAssist(modeOverride?: "polish" | "coauthor" | "draft") {
     if (!activeSection) return;
+    const effectiveMode =
+      modeOverride ??
+      (activeZone.mode === "socratic" ? "polish" : activeZone.mode);
+    const effectiveIntensity =
+      autonomyIntensity <= 15
+        ? effectiveMode === "polish"
+          ? 45
+          : 90
+        : autonomyIntensity;
+
     setAiBusy(true);
     setError(null);
     setNotice(null);
@@ -427,7 +516,8 @@ export default function EditorView({ id }: { id: string }) {
         {
           method: "POST",
           body: {
-            mode,
+            mode: effectiveMode,
+            intensity: effectiveIntensity,
             selected_text: selectedText || undefined,
             instruction: aiInstruction.trim() || undefined,
           },
@@ -440,11 +530,17 @@ export default function EditorView({ id }: { id: string }) {
         editor.commands.setContent(res.section.content, { emitUpdate: false });
       }
       setPrism(res.project_authorship);
+      setSectionPrisms((prev) => ({
+        ...prev,
+        [res.section.id]: res.section_authorship,
+      }));
       setAiInstruction("");
       setNotice(
-        mode === "polish"
-          ? "Trecho lapidado em norma culta acadêmica (registrado na faixa de revisão leve do Prisma)."
-          : "Parágrafo redigido com base nos trechos literais verificados (declaração de IA ativada automaticamente no Prisma)."
+        res.mode === "polish"
+          ? `Trecho revisado na intensidade ${res.intensity}% (registrado na faixa de revisão leve do Prisma).`
+          : res.mode === "coauthor"
+          ? `Co-escrita híbrida (${res.intensity}%) concluída com citação verificada.`
+          : `Parágrafo redigido (${res.intensity}%) com base nos trechos literais verificados (declaração de IA ativada no Prisma).`
       );
       void refreshCoherence();
     } catch (err) {
@@ -453,6 +549,43 @@ export default function EditorView({ id }: { id: string }) {
       setAiBusy(false);
     }
   }
+
+  async function handleValidateAuthenticity(syncPrism: boolean = false) {
+    if (!activeSection) return;
+    setValidatingForensics(true);
+    setError(null);
+    try {
+      const res = await api<ValidateAuthenticityResponse>(
+        `/projects/${id}/sections/${activeSection.id}/validate-authenticity`,
+        {
+          method: "POST",
+          body: { sync_prism: syncPrism },
+        }
+      );
+      setPrism(res.project_authorship);
+      setSectionPrisms((prev) => ({
+        ...prev,
+        [activeSection.id]: res.section_authorship,
+      }));
+      setShowForensicPanel(true);
+      if (syncPrism) {
+        setNotice(
+          "Prisma de Autoria sincronizado com a validação estilométrica real do texto da seção."
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao validar autenticidade do texto."
+      );
+    } finally {
+      setValidatingForensics(false);
+    }
+  }
+
+  const activeSectionPrism = activeSection
+    ? sectionPrisms[activeSection.id] ?? prism
+    : prism;
+  const activeForensics = activeSectionPrism.forensics;
 
   return (
     <div className="min-h-screen flex flex-col bg-paper text-ink">
@@ -497,97 +630,300 @@ export default function EditorView({ id }: { id: string }) {
         {error && <AlertBanner variant="error">{error}</AlertBanner>}
         {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
 
-        {/* Seletor de Modo de Autonomia (estilo Antigravity) + Prisma de Autoria */}
+        {/* Gradiente Contínuo de Autonomia (0–100%) + Prisma de Autoria + Validador Forense de IA */}
         <section
-          aria-label="Modo de autonomia da IA e Prisma de Autoria"
-          className="grid grid-cols-1 gap-4 lg:grid-cols-12 items-stretch"
+          aria-label="Gradiente de autonomia da IA e Validador de Autoria"
+          className="space-y-4"
         >
-          {/* Seletor de Modo de Autonomia (7 cols) */}
-          <div className="lg:col-span-7 rounded-[12px] border border-borda bg-superficie p-4 flex flex-col justify-between gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
-                Modo de atuação da IA no editor (escolha o nível de intervenção)
-              </span>
-              {!prism.requires_disclosure && (
-                <label className="flex items-center gap-2 text-[13px] font-medium text-ink cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={omitDeclaration}
-                    onChange={(e) => setOmitDeclaration(e.target.checked)}
-                    className="h-4 w-4 accent-purple"
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 items-stretch">
+            {/* Gradiente Contínuo de Intervenção (7 cols) */}
+            <div className="lg:col-span-7 rounded-[12px] border border-borda bg-superficie p-4 flex flex-col justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                    Gradiente de Autonomia da IA ({autonomyIntensity}%)
+                  </span>
+                  <span
+                    className={`rounded-[6px] px-2 py-0.5 text-[11px] font-bold uppercase ${activeZone.badgeClass}`}
+                  >
+                    {activeZone.badgeText}
+                  </span>
+                </div>
+
+                {!prism.requires_disclosure && (
+                  <label className="flex items-center gap-2 text-[13px] font-medium text-ink cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={omitDeclaration}
+                      onChange={(e) => setOmitDeclaration(e.target.checked)}
+                      className="h-4 w-4 accent-purple"
+                    />
+                    <span>Omitir anexo de IA no DOCX (texto autoral)</span>
+                  </label>
+                )}
+              </div>
+
+              {/* Barra em Gradiente Contínuo + Slider Interativo */}
+              <div className="space-y-2 pt-1">
+                <div className="relative flex items-center">
+                  <div
+                    className="h-3.5 w-full rounded-full border border-borda"
+                    style={{
+                      background:
+                        "linear-gradient(90deg, #5F6E2F 0%, #5F6E2F 25%, #4B2A7B 50%, #E8761E 80%, #E8761E 100%)",
+                    }}
                   />
-                  <span>Omitir anexo de IA no DOCX (texto 100% autoral)</span>
-                </label>
-              )}
+                  {/* Marco de 60% (Limiar de Isenção COPE/SciELO) */}
+                  <div
+                    className="pointer-events-none absolute top-[-6px] bottom-[-6px] w-[2px] bg-ink"
+                    style={{ left: "60%" }}
+                    title="Limiar 60% COPE/SciELO: abaixo = revisão isenta; acima = declaração obrigatória"
+                  />
+                  <input
+                    type="range"
+                    aria-label="Gradiente de autonomia da IA"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={autonomyIntensity}
+                    onChange={(e) => handleIntensityChange(Number(e.target.value))}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  />
+                  {/* Cursor visual do gradiente */}
+                  <div
+                    className="pointer-events-none absolute h-6 w-6 -translate-x-1/2 rounded-full border-2 border-ink bg-paper shadow flex items-center justify-center text-[10px] font-bold text-ink transition-all"
+                    style={{ left: `${autonomyIntensity}%` }}
+                  >
+                    {autonomyIntensity}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] font-semibold text-locked">
+                  <span>0% Socrático</span>
+                  <span>25% Ortografia</span>
+                  <span>60% Limiar COPE/SciELO</span>
+                  <span>100% Redator com Fontes</span>
+                </div>
+              </div>
+
+              {/* Presets rápidos do Espectro + Descrição da Zona Ativa */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-borda bg-paper/60 px-3 py-2">
+                <div className="space-y-0.5">
+                  <div className="text-[14px] font-bold text-ink">{activeZone.zoneTitle}</div>
+                  <p className="text-[13px] text-locked">{activeZone.description}</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: "0% Socrático", val: 0 },
+                    { label: "25% Gramática", val: 25 },
+                    { label: "50% Estilo", val: 50 },
+                    { label: "70% Co-escrita", val: 70 },
+                    { label: "95% Redator", val: 95 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.val}
+                      type="button"
+                      onClick={() => handleIntensityChange(preset.val)}
+                      className={`rounded-[6px] border px-2 py-1 text-[12px] font-bold transition cursor-pointer ${
+                        autonomyIntensity === preset.val
+                          ? "border-purple bg-purple text-paper"
+                          : "border-borda bg-superficie text-ink hover:bg-paper"
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              <button
-                type="button"
-                onClick={() => setAutonomyMode("socratic")}
-                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
-                  autonomyMode === "socratic"
-                    ? "border-2 border-done bg-paper/70"
-                    : "border-borda bg-superficie hover:bg-paper/40"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[14px] font-bold text-ink">1. Socrático</span>
-                  <span className="rounded bg-done px-1.5 py-0.5 text-[11px] font-bold uppercase text-paper">
-                    Isento
-                  </span>
-                </div>
-                <p className="mt-1 text-[13px] leading-snug text-locked">
-                  A IA só pergunta e verifica citações. Você escreve 100%.
-                </p>
-              </button>
+            {/* Prisma de Autoria + Botão de Validação Forense (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col justify-between gap-2.5">
+              <AuthorshipPrismBar prism={prism} />
 
-              <button
-                type="button"
-                onClick={() => setAutonomyMode("polish")}
-                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
-                  autonomyMode === "polish"
-                    ? "border-2 border-purple bg-skipped-bg/60"
-                    : "border-borda bg-superficie hover:bg-paper/40"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[14px] font-bold text-ink">2. Copiloto Leve</span>
-                  <span className="rounded bg-purple px-1.5 py-0.5 text-[11px] font-bold uppercase text-paper">
-                    Revisão
-                  </span>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-borda bg-superficie px-3.5 py-2.5">
+                <div className="text-[13px] text-ink">
+                  <strong>Detector Forense de Autoria:</strong> verifica burstiness, entropia e clichês de LLM no texto real.
                 </div>
-                <p className="mt-1 text-[13px] leading-snug text-locked">
-                  Lapida gramática e estilo do que você escreveu, sem criar texto.
-                </p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setAutonomyMode("draft")}
-                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
-                  autonomyMode === "draft"
-                    ? "border-2 border-ink bg-orange/20"
-                    : "border-borda bg-superficie hover:bg-paper/40"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[14px] font-bold text-ink">3. Redator Guiado</span>
-                  <span className="rounded bg-orange px-1.5 py-0.5 text-[11px] font-bold uppercase text-ink">
-                    Declara
-                  </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={validatingForensics || !activeSection}
+                    onClick={() => void handleValidateAuthenticity(false)}
+                    className="rounded-[8px] border border-purple bg-skipped-bg/60 px-3 py-1.5 text-[13px] font-bold text-purple hover:bg-purple hover:text-paper transition cursor-pointer"
+                  >
+                    {validatingForensics
+                      ? "Auditando texto…"
+                      : showForensicPanel
+                      ? "Atualizar Raio-X Forense"
+                      : "Validar se é de IA de fato (Raio-X)"}
+                  </button>
+                  {showForensicPanel && (
+                    <button
+                      type="button"
+                      onClick={() => setShowForensicPanel(false)}
+                      className="text-[13px] font-bold text-locked hover:text-ink px-1.5 cursor-pointer"
+                    >
+                      Ocultar
+                    </button>
+                  )}
                 </div>
-                <p className="mt-1 text-[13px] leading-snug text-locked">
-                  A IA redige parágrafo usando só seus trechos verificados.
-                </p>
-              </button>
+              </div>
             </div>
           </div>
 
-          {/* Prisma de Autoria em Tempo Real (5 cols) */}
-          <div className="lg:col-span-5 flex flex-col justify-center">
-            <AuthorshipPrismBar prism={prism} />
-          </div>
+          {/* Painel de Validação Forense e Raio-X Sentença por Sentença */}
+          {showForensicPanel && activeForensics && (
+            <div
+              aria-label="Resultado da validação forense de autoria"
+              className="rounded-[14px] border-2 border-purple bg-superficie p-5 space-y-4"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-borda pb-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <h2 className="font-display text-lg text-ink">
+                      Validador Forense de Autoria Real · {activeSection?.title}
+                    </h2>
+                    <span
+                      className={`rounded-[6px] px-2.5 py-0.5 text-[12px] font-bold uppercase ${
+                        activeForensics.verdict_code === "ai_dominant"
+                          ? "bg-orange text-ink"
+                          : activeForensics.verdict_code === "hybrid"
+                          ? "bg-purple text-paper"
+                          : "bg-done text-paper"
+                      }`}
+                    >
+                      {activeForensics.verdict_label}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[13px] text-locked">
+                    Análise estilométrica determinística (variação sintática de frases, entropia vocabular, marcadores típicos de LLM e ancoragem empírica).
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={validatingForensics}
+                    onClick={() => void handleValidateAuthenticity(true)}
+                  >
+                    Sincronizar Prisma com Validação Real
+                  </Button>
+                </div>
+              </div>
+
+              {/* 4 Cartões de Métricas Estilométricas */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
+                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                    Assinatura Estilométrica IA
+                  </div>
+                  <div className="mt-1 text-2xl font-bold text-ink">
+                    {activeForensics.measured_ai_score}%
+                  </div>
+                  <div className="text-[12px] text-locked">
+                    {100 - activeForensics.measured_ai_score}% naturalidade humana
+                  </div>
+                </div>
+
+                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
+                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                    Burstiness Sintática (CV)
+                  </div>
+                  <div className="mt-1 text-2xl font-bold text-ink">
+                    {activeForensics.burstiness_score}/100
+                  </div>
+                  <div className="text-[12px] text-locked">
+                    CV = {activeForensics.burstiness_cv} (humanos variam frases; IA é monótona)
+                  </div>
+                </div>
+
+                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
+                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                    Entropia Lexical (TTR)
+                  </div>
+                  <div className="mt-1 text-2xl font-bold text-ink">
+                    {activeForensics.lexical_diversity_score}/100
+                  </div>
+                  <div className="text-[12px] text-locked">
+                    Riqueza de vocabulário não repetitivo
+                  </div>
+                </div>
+
+                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
+                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                    Clichês de LLM Detectados
+                  </div>
+                  <div className="mt-1 text-2xl font-bold text-ink">
+                    {activeForensics.llm_markers_found.length}
+                  </div>
+                  <div className="text-[12px] text-locked truncate">
+                    {activeForensics.llm_markers_found.length > 0
+                      ? activeForensics.llm_markers_found.map((m) => `“${m}”`).join(", ")
+                      : "Nenhum vício generativo detectado"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Raio-X Sentença por Sentença no Gradiente */}
+              <div className="space-y-2">
+                <div className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                  Raio-X Sentença por Sentença ({activeForensics.sentences.length} períodos analisados)
+                </div>
+
+                {activeForensics.sentences.length === 0 ? (
+                  <p className="text-[14px] text-locked">
+                    Escreva pelo menos uma frase completa na seção para visualizar o mapa de calor por sentença.
+                  </p>
+                ) : (
+                  <div className="max-h-[260px] overflow-y-auto space-y-2 pr-1">
+                    {activeForensics.sentences.map((sent) => {
+                      const badgeStyle =
+                        sent.classification === "ai_pattern"
+                          ? "bg-orange text-ink"
+                          : sent.classification === "hybrid"
+                          ? "bg-purple text-paper"
+                          : "bg-done text-paper";
+                      const badgeLabel =
+                        sent.classification === "ai_pattern"
+                          ? `${sent.ai_probability}% Padrão IA`
+                          : sent.classification === "hybrid"
+                          ? `${sent.ai_probability}% Híbrida / Polida`
+                          : `${100 - sent.ai_probability}% Humana Autêntica`;
+
+                      return (
+                        <div
+                          key={sent.index}
+                          className="rounded-[10px] border border-borda bg-paper/40 p-3 space-y-1.5"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span
+                              className={`inline-flex items-center rounded-[6px] px-2 py-0.5 text-[12px] font-bold ${badgeStyle}`}
+                            >
+                              {badgeLabel}
+                            </span>
+                            <span className="text-[12px] text-locked">
+                              {sent.word_count} palavras ·{" "}
+                              {sent.reasons.join(" · ")}
+                            </span>
+                          </div>
+                          <p className="font-serif-academic text-[15px] leading-snug text-ink">
+                            {sent.classification === "ai_pattern" ? (
+                              <mark className="mark-orange">{sent.text}</mark>
+                            ) : (
+                              sent.text
+                            )}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Layout de 3 colunas */}
@@ -782,18 +1118,16 @@ export default function EditorView({ id }: { id: string }) {
               </div>
             </div>
 
-            {/* Barra de Execução dos Modos 2 (Lapidação) e 3 (Redação Guiada por Evidências) */}
-            {autonomyMode !== "socratic" && activeSection && (
+            {/* Barra de Execução do Gradiente (>15%: Revisão, Co-escrita Híbrida ou Redação Guiada) */}
+            {autonomyIntensity > 15 && activeSection && (
               <div
                 className={`border-b border-borda px-4 py-3 space-y-2.5 ${
-                  autonomyMode === "polish" ? "bg-skipped-bg/50" : "bg-paper"
+                  autonomyIntensity <= 60 ? "bg-skipped-bg/50" : "bg-paper"
                 }`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
-                    {autonomyMode === "polish"
-                      ? "Modo 2 · Copiloto de Lapidação (revisa seu texto sem exigir nota de geração por IA)"
-                      : "Modo 3 · Redator Guiado por Evidências (redige a partir dos trechos verificados e registra no Prisma)"}
+                    {activeZone.zoneTitle}
                   </span>
                 </div>
 
@@ -803,8 +1137,10 @@ export default function EditorView({ id }: { id: string }) {
                     value={aiInstruction}
                     onChange={(e) => setAiInstruction(e.target.value)}
                     placeholder={
-                      autonomyMode === "polish"
+                      autonomyIntensity <= 60
                         ? "Orientação opcional (ex.: mais conciso, formalizar conectivos)…"
+                        : autonomyIntensity <= 80
+                        ? "Sua frase inicial / premissa para a IA expandir com uma citação verificada…"
                         : "Foco do parágrafo (ex.: relacionar aprendizagem significativa à motivação)…"
                     }
                     className="flex-1 h-[42px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
@@ -813,15 +1149,9 @@ export default function EditorView({ id }: { id: string }) {
                     type="button"
                     variant="secondary"
                     disabled={aiBusy}
-                    onClick={() =>
-                      void handleRunAiAssist(autonomyMode === "polish" ? "polish" : "draft")
-                    }
+                    onClick={() => void handleRunAiAssist()}
                   >
-                    {aiBusy
-                      ? "Processando…"
-                      : autonomyMode === "polish"
-                      ? "Lapidar texto da seção"
-                      : "Redigir parágrafo com fontes"}
+                    {aiBusy ? "Processando…" : activeZone.buttonLabel}
                   </Button>
                 </div>
               </div>

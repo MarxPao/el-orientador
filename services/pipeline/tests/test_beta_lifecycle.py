@@ -294,3 +294,28 @@ def test_complete_beta_lifecycle(client: TestClient):
     assert draft_prism["requires_disclosure"] is True
     assert draft_prism["ai_drafted_words"] > 0
     assert "A adoção de metodologias ativas eleva a retenção escolar em 28%" in draft_ok.json()["generated_text"]
+
+    # 12. Continuous Gradient (intensity=70 coauthor) & Forensic AI Authenticity Validator
+    coauthor_res = client.post(
+        f"/projects/{project_id}/sections/{sec_id}/ai-assist",
+        json={
+            "intensity": 70,
+            "instruction": "A permanência estudantil depende do engajamento ativo em sala",
+        },
+        headers=headers,
+    )
+    assert coauthor_res.status_code == 200
+    assert coauthor_res.json()["mode"] == "coauthor"
+    assert coauthor_res.json()["intensity"] == 70
+
+    val_res = client.post(
+        f"/projects/{project_id}/sections/{sec_id}/validate-authenticity",
+        json={"sync_prism": True},
+        headers=headers,
+    )
+    assert val_res.status_code == 200
+    sec_auth = val_res.json()["section_authorship"]
+    assert "forensics" in sec_auth
+    assert isinstance(sec_auth["forensics"]["measured_ai_score"], int)
+    assert isinstance(sec_auth["forensics"]["burstiness_score"], int)
+    assert len(sec_auth["forensics"]["sentences"]) >= 1

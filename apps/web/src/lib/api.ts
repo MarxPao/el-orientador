@@ -260,6 +260,30 @@ export type CoherenceWarning = {
   document_title?: string;
 };
 
+export type ForensicSentence = {
+  index: number;
+  text: string;
+  word_count: number;
+  ai_probability: number;
+  classification: "human" | "hybrid" | "ai_pattern";
+  reasons: string[];
+  has_verified_citation: boolean;
+};
+
+export type ForensicAnalysis = {
+  measured_ai_score: number;
+  measured_human_pct: number;
+  measured_hybrid_pct: number;
+  measured_ai_pct: number;
+  burstiness_score: number;
+  burstiness_cv: number;
+  lexical_diversity_score: number;
+  llm_markers_found: string[];
+  verdict_code: "empty" | "human_dominant" | "hybrid" | "ai_dominant";
+  verdict_label: string;
+  sentences: ForensicSentence[];
+};
+
 export type AuthorshipPrism = {
   total_words: number;
   human_words: number;
@@ -268,6 +292,13 @@ export type AuthorshipPrism = {
   human_pct: number;
   polished_pct: number;
   ai_drafted_pct: number;
+  last_intensity?: number;
+  measured_ai_score?: number;
+  burstiness_score?: number;
+  llm_markers_found?: string[];
+  telemetry_discrepancy?: boolean;
+  discrepancy_message?: string | null;
+  forensics?: ForensicAnalysis;
   requires_disclosure: boolean;
   status_label?: string;
 };
@@ -280,7 +311,14 @@ export type ProjectAuthorshipResponse = {
 export type AiAssistResponse = {
   section: Section;
   generated_text: string;
-  mode: "polish" | "draft";
+  mode: "polish" | "coauthor" | "draft";
+  intensity: number;
+  section_authorship: AuthorshipPrism;
+  project_authorship: AuthorshipPrism;
+};
+
+export type ValidateAuthenticityResponse = {
+  section_id: string;
   section_authorship: AuthorshipPrism;
   project_authorship: AuthorshipPrism;
 };

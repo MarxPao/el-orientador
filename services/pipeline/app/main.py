@@ -39,6 +39,7 @@ from .coherence import check_coherence, extract_plain_text
 from .export_docx import build_docx_manuscript
 from .reports import generate_advisor_report_payload
 from .authorship import (
+    coauthor_with_evidence,
     compute_project_authorship,
     compute_section_authorship,
     count_words,
@@ -170,9 +171,14 @@ class SharedCommentIn(BaseModel):
 
 
 class AiAssistIn(BaseModel):
-    mode: Literal["polish", "draft"]
+    mode: Literal["polish", "coauthor", "draft"] | None = None
+    intensity: int | None = Field(default=None, ge=0, le=100)
     selected_text: str | None = Field(default=None, max_length=5000)
     instruction: str | None = Field(default=None, max_length=500)
+
+
+class ValidateAuthenticityIn(BaseModel):
+    sync_prism: bool = False
 
 
 def create_app(
@@ -796,12 +802,60 @@ def create_app(
 
     @app.get("/projects/{project_id}/authorship")
     def get_project_authorship(project_id: str, user: dict = Depends(current_user)):
-        """Return live Authorship Prism metrics across the project and per section."""
+        """Return live Authorship Prism & Forensic Stylometry metrics across the project and per section."""
         accessible_project(user, project_id)
         sections = repo.list_sections(project_id)
+        verified_quotes = [c.get("quote", "") for c in repo.list_project_claims(project_id)]
         return {
-            "project": compute_project_authorship(sections),
-            "sections": {s["id"]: compute_section_authorship(s) for s in sections},
+            "project": compute_project_authorship(sections, verified_quotes=verified_quotes),
+            "sections": {
+                s["id"]: compute_section_authorship(s, verified_quotes=verified_quotes)
+                for s in sections
+            },
+        }
+
+    @app.post("/projects/{project_id}/sections/{section_id}/validate-authenticity")
+    def post_validate_section_authenticity(
+        project_id: str,
+        section_id: str,
+        body: ValidateAuthenticityIn | None = None,
+        user: dict = Depends(current_user),
+    ):
+        """Run forensic stylometric AI validation on a manuscript section and optionally sync the Authorship Prism."""
+        accessible_project(user, project_id)
+        sec = repo.get_section(project_id, section_id)
+        if not sec:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Seção não encontrada.")
+
+        verified_quotes = [c.get("quote", "") for c in repo.list_project_claims(project_id)]
+        sec_auth = compute_section_authorship(sec, verified_quotes=verified_quotes)
+
+        if body and body.sync_prism and sec_auth["total_words"] > 0:
+            owned_project(user, project_id)
+            forensics = sec_auth["forensics"]
+            total_w = sec_auth["total_words"]
+            new_ai_words = int(round((forensics["measured_ai_pct"] / 100.0) * total_w))
+            new_polished_words = int(round((forensics["measured_hybrid_pct"] / 100.0) * total_w))
+            content_dict = dict(sec.get("content") or {"type": "doc", "content": []})
+            auth_meta = dict(content_dict.get("_authorship") or {})
+            auth_meta["ai_drafted_words"] = new_ai_words
+            auth_meta["polished_words"] = new_polished_words
+            content_dict["_authorship"] = auth_meta
+            sec = repo.update_section(project_id, section_id, content=content_dict)
+            sec_auth = compute_section_authorship(sec, verified_quotes=verified_quotes)
+
+        repo.log_ai_usage(
+            project_id,
+            "validate_authenticity",
+            section_id,
+            "stylometric_forensics_v1",
+            "burstiness_ttr_markers_v1",
+        )
+        all_sections = repo.list_sections(project_id)
+        return {
+            "section_id": section_id,
+            "section_authorship": sec_auth,
+            "project_authorship": compute_project_authorship(all_sections, verified_quotes=verified_quotes),
         }
 
     @app.post("/projects/{project_id}/sections/{section_id}/ai-assist")
@@ -811,21 +865,44 @@ def create_app(
         body: AiAssistIn,
         user: dict = Depends(current_user),
     ):
-        """AI Writing Assistance according to selected autonomy mode:
-        - `polish` (Mode 2): Copy-edits student-written text without adding new claims.
-        - `draft` (Mode 3): Drafts an academic paragraph strictly anchored in verified literal quotes (`quote` + `page`).
+        """AI Writing Assistance across a continuous 0-100% autonomy gradient:
+        - `intensity <= 60` or `mode == 'polish'`: Copy-edits student-written text without adding new claims.
+        - `61 <= intensity <= 80` or `mode == 'coauthor'`: Hybrid co-writing expanding the student's topic sentence with 1 verified quote.
+        - `intensity >= 81` or `mode == 'draft'`: Drafts an academic paragraph strictly anchored in verified literal quotes (`quote` + `page`).
         """
         owned_project(user, project_id)
         sec = repo.get_section(project_id, section_id)
         if not sec:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Seção não encontrada.")
 
+        # Resolve effective mode and intensity on the 0-100% gradient
+        if body.intensity is not None:
+            intensity = body.intensity
+            if body.mode:
+                resolved_mode = body.mode
+            elif intensity <= 60:
+                resolved_mode = "polish"
+            elif intensity <= 80:
+                resolved_mode = "coauthor"
+            else:
+                resolved_mode = "draft"
+        else:
+            resolved_mode = body.mode or "polish"
+            intensity = 45 if resolved_mode == "polish" else (70 if resolved_mode == "coauthor" else 90)
+
+        if intensity <= 15 and body.mode is None:
+            raise HTTPException(
+                422,
+                "No nível Socrático (0–15%), a IA não altera o texto. Aumente o gradiente para pelo menos 20% para revisão ou redação.",
+            )
+
         content_dict = dict(sec.get("content") or {"type": "doc", "content": []})
         if not isinstance(content_dict.get("content"), list):
             content_dict = {"type": "doc", "content": []}
         auth_meta = dict(content_dict.get("_authorship") or {"polished_words": 0, "ai_drafted_words": 0})
+        auth_meta["last_intensity"] = intensity
 
-        if body.mode == "polish":
+        if resolved_mode == "polish":
             raw_text = (body.selected_text or "").strip() or extract_plain_text(content_dict).strip()
             if not raw_text:
                 raise HTTPException(
@@ -836,12 +913,12 @@ def create_app(
                 text=raw_text,
                 section_title=sec["title"],
                 instruction=body.instruction,
+                intensity=intensity,
                 client=client,
             )
             words_added = count_words(generated_text)
             auth_meta["polished_words"] = int(auth_meta.get("polished_words", 0)) + words_added
 
-            # If the user polished the whole section or didn't pass a partial snippet, update the last paragraph
             paragraphs = [
                 p.strip() for p in generated_text.split("\n\n") if p.strip()
             ] or [generated_text]
@@ -862,10 +939,52 @@ def create_app(
                 "polish_text",
                 section_id,
                 getattr(client, "model", "deterministic_polish"),
-                "academic_polish_v0.1",
+                f"academic_polish_intensity_{intensity}",
+            )
+        elif resolved_mode == "coauthor":
+            all_claims = repo.list_project_claims(project_id)
+            if not all_claims:
+                raise HTTPException(
+                    422,
+                    "Sem evidência verificada, não há co-escrita com IA. Adicione um PDF ou artigo com citações verificadas primeiro.",
+                )
+            sec_concepts = set(sec.get("concept_ids") or [])
+            relevant_claims = [c for c in all_claims if c.get("concept_id") in sec_concepts] or all_claims[:1]
+            new_concept_ids = list(
+                sec_concepts | {c["concept_id"] for c in relevant_claims if c.get("concept_id")}
+            )
+            repo.set_section_concepts(section_id, new_concept_ids)
+
+            docs_by_id = {d["id"]: d for d in repo.list_documents(project_id)}
+            premise = (body.selected_text or "").strip() or (body.instruction or "").strip()
+            generated_text = coauthor_with_evidence(
+                student_premise=premise,
+                claims=relevant_claims,
+                docs_by_id=docs_by_id,
+                section_title=sec["title"],
+                instruction=body.instruction,
+                client=client,
+            )
+            words_added = count_words(generated_text)
+            premise_words = min(words_added, count_words(premise))
+            ai_expansion_words = max(1, words_added - premise_words)
+            auth_meta["polished_words"] = int(auth_meta.get("polished_words", 0)) + premise_words
+            auth_meta["ai_drafted_words"] = int(auth_meta.get("ai_drafted_words", 0)) + ai_expansion_words
+
+            content_dict["content"] = list(content_dict["content"]) + [
+                {"type": "paragraph", "content": [{"type": "text", "text": generated_text}]}
+            ]
+            content_dict["_authorship"] = auth_meta
+            updated_sec = repo.update_section(project_id, section_id, content=content_dict)
+            repo.log_ai_usage(
+                project_id,
+                "draft_section",
+                section_id,
+                getattr(client, "model", "hybrid_coauthor"),
+                f"coauthor_intensity_{intensity}",
             )
         else:
-            # Mode 3: Evidence-Guided Draft (requires verified quotes!)
+            # Mode 3 (81-100%): Evidence-Guided Draft (requires verified quotes!)
             all_claims = repo.list_project_claims(project_id)
             if not all_claims:
                 raise HTTPException(
@@ -904,16 +1023,18 @@ def create_app(
                 "draft_section",
                 section_id,
                 getattr(client, "model", "evidence_synthesizer"),
-                "evidence_draft_v0.1",
+                f"evidence_draft_intensity_{intensity}",
             )
 
         all_sections = repo.list_sections(project_id)
+        verified_quotes = [c.get("quote", "") for c in repo.list_project_claims(project_id)]
         return {
             "section": updated_sec,
             "generated_text": generated_text,
-            "mode": body.mode,
-            "section_authorship": compute_section_authorship(updated_sec),
-            "project_authorship": compute_project_authorship(all_sections),
+            "mode": resolved_mode,
+            "intensity": intensity,
+            "section_authorship": compute_section_authorship(updated_sec, verified_quotes=verified_quotes),
+            "project_authorship": compute_project_authorship(all_sections, verified_quotes=verified_quotes),
         }
 
     @app.delete("/projects/{project_id}/sections/{section_id}")
