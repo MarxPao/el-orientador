@@ -134,6 +134,29 @@ export async function fetchPdfBlobUrl(projectId: string, documentId: string, pag
   return `${url}#page=${page}`;
 }
 
+export async function uploadDocumentPdf(
+  projectId: string,
+  file: File,
+  title?: string
+): Promise<{ id: string; title: string; status: string }> {
+  const token = getToken();
+  const fd = new FormData();
+  fd.append("file", file);
+  if (title && title.trim()) {
+    fd.append("title", title.trim());
+  }
+  const res = await fetch(`${API_URL}/projects/${projectId}/documents/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new ApiError(res.status, data?.detail ?? "Não foi possível enviar o PDF.");
+  }
+  return data;
+}
+
 export const RELATION_LABELS: Record<string, string> = {
   apoia: "apoia",
   contrasta: "contrasta com",

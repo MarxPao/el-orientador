@@ -12,6 +12,7 @@ from typing import Any
 
 from .coherence import extract_plain_text
 from .pipeline.llm import LLMClient
+from .pipeline.verify_quotes import verify_quote
 
 
 def classify_passage_role(statement: str, quote: str) -> dict[str, str]:
@@ -473,3 +474,78 @@ def compare_and_connect_passages(
         },
         "synthesis_text": synthesis_text,
     }
+
+
+def extract_verified_passages_deterministic(
+    pages: list[str],
+    doc_title: str,
+) -> list[dict[str, Any]]:
+    """Deterministic fallback extractor when no external LLM API key is configured.
+    Every extracted sentence is strictly verified against `pages` via `verify_quote` (Rule 1)."""
+    candidates: list[dict[str, Any]] = []
+    seen_quotes: set[str] = set()
+
+    for page_idx, page_text in enumerate(pages):
+        raw_sentences = re.split(r"(?<=[.!?])\s+", page_text.strip())
+        for sent in raw_sentences:
+            clean = re.sub(r"\s+", " ", sent).strip()
+            if len(clean) < 40 or len(clean) > 260:
+                continue
+            if clean.lower() in seen_quotes:
+                continue
+            r = verify_quote(clean, pages)
+            if not r.found:
+                continue
+
+            # Derive a concise concept label from significant words in the sentence or title
+            words = [
+                w
+                for w in re.findall(r"[A-Za-zÀ-ÿçÇ]{5,}", clean)
+                if w.lower()
+                not in {
+                    "sobre",
+                    "entre",
+                    "quando",
+                    "como",
+                    "para",
+                    "pelos",
+                    "pelas",
+                    "deste",
+                    "desta",
+                    "nesse",
+                    "nessa",
+                    "segundo",
+                    "estudo",
+                    "artigo",
+                    "texto",
+                    "resultados",
+                    "entretanto",
+                    "todavia",
+                    "contudo",
+                }
+            ]
+            concept_label = (
+                " ".join(words[:2]).capitalize()
+                if len(words) >= 2
+                else (doc_title.split(" ")[0].capitalize() or "Conceito central")
+            )
+            seen_quotes.add(clean.lower())
+            candidates.append(
+                {
+                    "concept": concept_label,
+                    "statement": clean,
+                    "quote": clean,
+                    "page_verified": r.page or (page_idx + 1),
+                    "char_start": r.start,
+                    "char_end": r.end,
+                    "verify_method": r.method,
+                    "quote_verified": True,
+                    "certainty": "sugere",
+                    "scope": {},
+                }
+            )
+            if len(candidates) >= 4:
+                return candidates
+
+    return candidates
+

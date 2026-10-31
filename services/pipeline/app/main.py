@@ -49,6 +49,7 @@ from .authorship import (
 from .text_analysis import (
     analyze_project_texts,
     compare_and_connect_passages,
+    extract_verified_passages_deterministic,
 )
 
 
@@ -437,6 +438,74 @@ def create_app(
                     "document_title": doc.get("title"),
                     "authors": doc.get("authors") or [],
                     "year": doc.get("year"),
+                    "statement": c["statement"],
+                    "quote": c["quote"],
+                    "page_no": c["page_no"],
+                    "concepts": (
+                        [{"id": c["concept_id"], "label": c["concept"]}]
+                        if c.get("concept_id")
+                        else []
+                    ),
+                }
+            )
+        sections = repo.list_sections(project_id)
+        return analyze_project_texts(project, docs, raw_claims, sections)
+
+    @app.post("/projects/{project_id}/documents/{document_id}/dissect")
+    def post_dissect_document(
+        project_id: str,
+        document_id: str,
+        user: dict = Depends(current_user),
+    ):
+        """Ensure verified passages are extracted for an uploaded PDF (using deterministic quote verification if no LLM is active) and return the updated Text Analysis workspace."""
+        project = owned_project(user, project_id)
+        doc = repo.get_document(document_id)
+        if not doc or doc["project_id"] != project_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Documento não encontrado.")
+
+        existing_claims = repo.list_claims(document_id)
+        if not existing_claims:
+            pages = repo.get_pages(document_id)
+            if not pages and doc.get("storage_path"):
+                from .jobs import parse_pdf
+
+                try:
+                    pages = parse_pdf(storage_dir / doc["storage_path"])
+                    repo.save_pages(document_id, pages)
+                except Exception:
+                    pages = []
+            if pages:
+                extracted = extract_verified_passages_deterministic(
+                    pages, doc.get("title") or "Documento"
+                )
+                if extracted:
+                    repo.add_claims(
+                        document_id,
+                        extracted,
+                        "deterministic_dissector_v1",
+                        "dissect_v1",
+                    )
+                    repo.update_document(document_id, status="extracted")
+                    repo.log_ai_usage(
+                        project_id,
+                        "dissect_pdf",
+                        document_id,
+                        "deterministic_dissector_v1",
+                        "dissect_v1",
+                    )
+
+        docs = repo.list_documents(project_id)
+        docs_by_id = {d["id"]: d for d in docs}
+        raw_claims = []
+        for c in repo.list_project_claims(project_id):
+            d_obj = docs_by_id.get(c["document_id"]) or {}
+            raw_claims.append(
+                {
+                    "id": c["id"],
+                    "document_id": c["document_id"],
+                    "document_title": d_obj.get("title"),
+                    "authors": d_obj.get("authors") or [],
+                    "year": d_obj.get("year"),
                     "statement": c["statement"],
                     "quote": c["quote"],
                     "page_no": c["page_no"],

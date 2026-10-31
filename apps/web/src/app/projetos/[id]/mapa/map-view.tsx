@@ -18,9 +18,18 @@ import {
   openPdfAtPage,
   RELATION_LABELS,
   STATUS_LABELS,
+  TextAnalysisWorkspace,
+  uploadDocumentPdf,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
-import { AlertBanner, Button, CheckIcon, GapIcon, LockIcon } from "@/components/ui";
+import {
+  AdvisorBubble,
+  AlertBanner,
+  Button,
+  CheckIcon,
+  GapIcon,
+  LockIcon,
+} from "@/components/ui";
 
 type Status = MapLink["status"];
 
@@ -82,6 +91,14 @@ export default function MapView({ id }: { id: string }) {
     quote: string;
     concept: string;
   } | null>(null);
+  const [textAnalysis, setTextAnalysis] = useState<TextAnalysisWorkspace | null>(null);
+  const [workbenchTab, setWorkbenchTab] = useState<"dissect" | "compare_table">("dissect");
+  const [selectedDocId, setSelectedDocId] = useState<string>("");
+  const [compareDocAId, setCompareDocAId] = useState<string>("");
+  const [compareDocBId, setCompareDocBId] = useState<string>("");
+  const [uploadingPdf, setUploadingPdf] = useState<boolean>(false);
+  const [pdfTitleInput, setPdfTitleInput] = useState<string>("");
+  const [studyAnswers, setStudyAnswers] = useState<Record<string, string>>({});
 
   async function onPreviewPdf(ev: Evidence) {
     setEvidenceError(null);
@@ -175,9 +192,26 @@ export default function MapView({ id }: { id: string }) {
       return;
     }
     let cancelled = false;
-    api<MapData>(`/projects/${id}/map`)
-      .then((d) => {
-        if (!cancelled) setData(d);
+    Promise.all([
+      api<MapData>(`/projects/${id}/map`),
+      api<TextAnalysisWorkspace>(`/projects/${id}/text-analysis`).catch(() => null),
+    ])
+      .then(([d, ta]) => {
+        if (cancelled) return;
+        setData(d);
+        if (ta) {
+          setTextAnalysis(ta);
+          if (ta.document_guides.length > 0 && !selectedDocId) {
+            setSelectedDocId(ta.document_guides[0].document_id);
+          }
+          if (ta.document_guides.length >= 2 && !compareDocAId) {
+            setCompareDocAId(ta.document_guides[0].document_id);
+            setCompareDocBId(ta.document_guides[1].document_id);
+          } else if (ta.document_guides.length === 1 && !compareDocAId) {
+            setCompareDocAId(ta.document_guides[0].document_id);
+            setCompareDocBId(ta.document_guides[0].document_id);
+          }
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -187,7 +221,83 @@ export default function MapView({ id }: { id: string }) {
     return () => {
       cancelled = true;
     };
-  }, [id, reloadKey, router]);
+  }, [id, reloadKey, router, selectedDocId, compareDocAId]);
+
+  async function handlePdfUpload(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fileInput = form.elements.namedItem("pdf_file") as HTMLInputElement | null;
+    const file = fileInput?.files?.[0];
+    if (!file) {
+      setError("Selecione um arquivo PDF para enviar e analisar.");
+      return;
+    }
+    setUploadingPdf(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const uploaded = await uploadDocumentPdf(id, file, pdfTitleInput);
+      const updatedTa = await api<TextAnalysisWorkspace>(
+        `/projects/${id}/documents/${uploaded.id}/dissect`,
+        { method: "POST" }
+      );
+      setTextAnalysis(updatedTa);
+      setSelectedDocId(uploaded.id);
+      setWorkbenchTab("dissect");
+      setPdfTitleInput("");
+      form.reset();
+      setNotice(
+        `PDF “${uploaded.title}” enviado e dissecado com sucesso! Veja o Raio-X Analítico e as passagens verificadas abaixo.`
+      );
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao enviar e analisar o PDF.");
+    } finally {
+      setUploadingPdf(false);
+    }
+  }
+
+  async function handleDissectExistingDoc(docId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updatedTa = await api<TextAnalysisWorkspace>(
+        `/projects/${id}/documents/${docId}/dissect`,
+        { method: "POST" }
+      );
+      setTextAnalysis(updatedTa);
+      setNotice("Passagens literais verificadas extraídas e classificadas por papel científico.");
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao dissecar documento.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const activeDocGuide = useMemo(() => {
+    if (!textAnalysis || textAnalysis.document_guides.length === 0) return null;
+    return (
+      textAnalysis.document_guides.find((d) => d.document_id === selectedDocId) ??
+      textAnalysis.document_guides[0]
+    );
+  }, [textAnalysis, selectedDocId]);
+
+  const docGuideA = useMemo(() => {
+    if (!textAnalysis || textAnalysis.document_guides.length === 0) return null;
+    return (
+      textAnalysis.document_guides.find((d) => d.document_id === compareDocAId) ??
+      textAnalysis.document_guides[0]
+    );
+  }, [textAnalysis, compareDocAId]);
+
+  const docGuideB = useMemo(() => {
+    if (!textAnalysis || textAnalysis.document_guides.length === 0) return null;
+    return (
+      textAnalysis.document_guides.find((d) => d.document_id === compareDocBId) ??
+      textAnalysis.document_guides[Math.min(1, textAnalysis.document_guides.length - 1)]
+    );
+  }, [textAnalysis, compareDocBId]);
 
   const visibleLinks = useMemo(
     () =>
@@ -379,6 +489,382 @@ export default function MapView({ id }: { id: string }) {
 
         {error && <AlertBanner variant="error">{error}</AlertBanner>}
         {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
+
+        {/* Bancada de Upload de PDF + Análise Guiada e Confronto Lado a Lado */}
+        <section
+          aria-label="Bancada de upload e análise guiada de PDFs"
+          className="rounded-[16px] border border-borda bg-superficie p-6 space-y-5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-4">
+            <div>
+              <h2 className="font-display text-2xl text-ink">
+                Bancada de análise guiada e confronto de textos
+              </h2>
+              <p className="mt-0.5 text-[14px] text-locked">
+                Envie um PDF para o Orientador dissecar a tese, classificar as evidências por papel científico e comparar autores lado a lado.
+              </p>
+            </div>
+
+            {/* Formulário rápido de Upload de PDF */}
+            <form
+              onSubmit={handlePdfUpload}
+              className="flex flex-wrap items-center gap-2.5"
+            >
+              <input
+                type="text"
+                value={pdfTitleInput}
+                onChange={(e) => setPdfTitleInput(e.target.value)}
+                placeholder="Título do artigo (opcional)"
+                className="h-[42px] rounded-[10px] border border-borda bg-paper/50 px-3 text-[14px] text-ink"
+              />
+              <input
+                type="file"
+                name="pdf_file"
+                accept="application/pdf"
+                aria-label="Arquivo PDF para análise"
+                className="text-[13px] text-ink file:mr-2 file:rounded-[8px] file:border file:border-purple file:bg-skipped-bg file:px-3 file:py-1.5 file:text-[13px] file:font-bold file:text-purple file:cursor-pointer"
+              />
+              <Button type="submit" variant="secondary" disabled={uploadingPdf}>
+                {uploadingPdf ? "Dissecando PDF…" : "Enviar e analisar PDF"}
+              </Button>
+            </form>
+          </div>
+
+          {textAnalysis && textAnalysis.document_guides.length > 0 && (
+            <div className="space-y-4">
+              {/* Abas da Bancada */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setWorkbenchTab("dissect")}
+                    className={`min-h-[40px] rounded-[8px] px-3.5 text-[14px] font-bold transition cursor-pointer ${
+                      workbenchTab === "dissect"
+                        ? "bg-purple text-paper"
+                        : "border border-borda bg-paper text-ink hover:bg-skipped-bg/40"
+                    }`}
+                  >
+                    1. Guia de Leitura e Dissecação ({textAnalysis.document_guides.length} PDFs)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkbenchTab("compare_table")}
+                    className={`min-h-[40px] rounded-[8px] px-3.5 text-[14px] font-bold transition cursor-pointer ${
+                      workbenchTab === "compare_table"
+                        ? "bg-purple text-paper"
+                        : "border border-borda bg-paper text-ink hover:bg-skipped-bg/40"
+                    }`}
+                  >
+                    2. Mesa de Confronto Lado a Lado (PDF 1 × PDF 2)
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => router.push(`/projetos/${id}/editor`)}
+                  className="text-[14px] font-bold text-purple underline cursor-pointer"
+                >
+                  Ir para o Costureiro Dialético no Editor →
+                </button>
+              </div>
+
+              {/* ABA 1: Dissecação e Estudo Dirigido do PDF */}
+              {workbenchTab === "dissect" && activeDocGuide && (
+                <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 items-start">
+                  {/* Coluna Esquerda: Seleção do PDF + Tese + Roteiro Socrático (5 cols) */}
+                  <div className="lg:col-span-5 space-y-4 rounded-[12px] border border-borda bg-paper/50 p-4">
+                    <div>
+                      <label className="block text-[12px] font-bold uppercase tracking-wider text-locked mb-1">
+                        Artigo em dissecação:
+                      </label>
+                      <select
+                        aria-label="Selecionar artigo para dissecação"
+                        value={activeDocGuide.document_id}
+                        onChange={(e) => setSelectedDocId(e.target.value)}
+                        className="w-full h-[42px] rounded-[10px] border border-borda bg-superficie px-3 text-[15px] font-bold text-ink"
+                      >
+                        {textAnalysis.document_guides.map((dg) => (
+                          <option key={dg.document_id} value={dg.document_id}>
+                            {dg.title} ({dg.year ?? "s.d."}) — {dg.claims_count} trechos verificados
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {activeDocGuide.claims_count === 0 && (
+                      <div className="rounded-[10px] border border-purple bg-superficie p-3 flex items-center justify-between gap-2">
+                        <span className="text-[13px] text-ink">
+                          Este PDF já foi lido, mas ainda não teve seus trechos classificados.
+                        </span>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={() => void handleDissectExistingDoc(activeDocGuide.document_id)}
+                        >
+                          Extrair trechos
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Raio-X da Tese Central */}
+                    <div className="rounded-[10px] border border-borda bg-superficie p-3.5 space-y-1">
+                      <span className="text-[12px] font-bold uppercase tracking-wider text-purple">
+                        Tese central extraída do texto
+                      </span>
+                      <p className="text-[15px] font-medium text-ink leading-relaxed">
+                        {activeDocGuide.core_thesis}
+                      </p>
+                    </div>
+
+                    {/* Pontes com outros PDFs */}
+                    {activeDocGuide.shared_bridges.length > 0 && (
+                      <div className="rounded-[10px] border border-done bg-superficie p-3.5 space-y-1.5">
+                        <span className="text-[12px] font-bold uppercase tracking-wider text-done">
+                          Raio-X de Impacto · Conexões com sua biblioteca
+                        </span>
+                        {activeDocGuide.shared_bridges.map((br, i) => (
+                          <p key={i} className="text-[14px] text-ink">
+                            Compartilha o conceito <strong>{br.concept_label}</strong> com{" "}
+                            <em>{br.other_document_title}</em>.
+                          </p>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Estudo Dirigido Socrático (Perguntas + Anotação do Aluno) */}
+                    <AdvisorBubble label="Estudo dirigido: perguntas para você analisar o texto">
+                      <div className="space-y-2.5 text-[14px]">
+                        {activeDocGuide.study_questions.map((q, idx) => (
+                          <div key={idx} className="space-y-1">
+                            <p>{q}</p>
+                            <input
+                              type="text"
+                              value={
+                                studyAnswers[`${activeDocGuide.document_id}_${idx}`] ?? ""
+                              }
+                              onChange={(e) =>
+                                setStudyAnswers((prev) => ({
+                                  ...prev,
+                                  [`${activeDocGuide.document_id}_${idx}`]: e.target.value,
+                                }))
+                              }
+                              placeholder="Anote sua resposta crítica aqui…"
+                              className="w-full h-[36px] rounded-[8px] border border-paper/40 bg-paper px-2.5 text-[13px] text-ink"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </AdvisorBubble>
+                  </div>
+
+                  {/* Coluna Direita: Passagens Classificadas por Papel Científico (7 cols) */}
+                  <div className="lg:col-span-7 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                        Anatomia dos trechos literais verificados ({activeDocGuide.passages.length})
+                      </span>
+                    </div>
+
+                    {activeDocGuide.passages.map((p) => (
+                      <div
+                        key={p.id}
+                        className="rounded-[12px] border border-borda bg-paper/40 p-4 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`rounded-[6px] px-2.5 py-0.5 text-[12px] font-bold uppercase ${
+                                p.role_code === "evidencia_empirica"
+                                  ? "bg-done text-paper"
+                                  : p.role_code === "limite_contraponto"
+                                  ? "bg-orange text-ink"
+                                  : "bg-purple text-paper"
+                              }`}
+                            >
+                              {p.role_label}
+                            </span>
+                            <span className="text-[13px] font-bold text-ink">
+                              {p.concepts.map((c) => c.label).join(", ")}
+                            </span>
+                          </div>
+                          <span className="text-[13px] font-bold text-purple">
+                            {p.citation_ref}
+                          </span>
+                        </div>
+
+                        <blockquote className="font-serif-academic text-[16px] leading-relaxed text-ink">
+                          <mark className="mark-orange">{p.quote}</mark>
+                        </blockquote>
+
+                        <div className="rounded-[8px] border border-borda bg-superficie p-2.5 text-[13px] text-ink">
+                          <strong className="text-purple">Guia de leitura:</strong> {p.reading_tip}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[13px]">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void onPreviewPdf({
+                                side: "source",
+                                concept: p.concepts[0]?.label ?? "Conceito",
+                                statement: p.statement,
+                                document_id: p.document_id,
+                                document_title: p.document_title,
+                                page: p.page_no,
+                                quote: p.quote,
+                                context_before: "",
+                                context_after: "",
+                                has_pdf: true,
+                              })
+                            }
+                            className="font-bold text-purple underline cursor-pointer"
+                          >
+                            Inspecionar no PDF original (pág. {p.page_no})
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ABA 2: Tabela de Confronto Lado a Lado (PDF 1 × PDF 2) */}
+              {workbenchTab === "compare_table" && docGuideA && docGuideB && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-[12px] font-bold uppercase tracking-wider text-locked mb-1">
+                        Texto / PDF 1:
+                      </label>
+                      <select
+                        aria-label="Selecionar Texto 1 para confronto"
+                        value={docGuideA.document_id}
+                        onChange={(e) => setCompareDocAId(e.target.value)}
+                        className="w-full h-[40px] rounded-[8px] border border-borda bg-paper px-3 text-[14px] font-bold text-ink"
+                      >
+                        {textAnalysis.document_guides.map((dg) => (
+                          <option key={dg.document_id} value={dg.document_id}>
+                            {dg.title} ({dg.year ?? "s.d."})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[12px] font-bold uppercase tracking-wider text-locked mb-1">
+                        Texto / PDF 2:
+                      </label>
+                      <select
+                        aria-label="Selecionar Texto 2 para confronto"
+                        value={docGuideB.document_id}
+                        onChange={(e) => setCompareDocBId(e.target.value)}
+                        className="w-full h-[40px] rounded-[8px] border border-borda bg-paper px-3 text-[14px] font-bold text-ink"
+                      >
+                        {textAnalysis.document_guides.map((dg) => (
+                          <option key={dg.document_id} value={dg.document_id}>
+                            {dg.title} ({dg.year ?? "s.d."})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-[12px] border border-borda">
+                    <table className="w-full text-left border-collapse text-[14px]">
+                      <thead>
+                        <tr className="border-b border-borda bg-paper text-[12px] font-bold uppercase tracking-wider text-locked">
+                          <th className="p-3.5 w-1/5">Lente de Análise</th>
+                          <th className="p-3.5 w-[30%] text-ink">
+                            PDF 1: {docGuideA.title} ({docGuideA.year ?? "s.d."})
+                          </th>
+                          <th className="p-3.5 w-[30%] text-ink">
+                            PDF 2: {docGuideB.title} ({docGuideB.year ?? "s.d."})
+                          </th>
+                          <th className="p-3.5 w-1/5 text-purple">
+                            Diagnóstico do Orientador
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-borda bg-superficie">
+                        <tr>
+                          <td className="p-3.5 font-bold text-ink">
+                            1. Tese / Como define o conceito
+                          </td>
+                          <td className="p-3.5 font-serif-academic">
+                            {docGuideA.passages[0] ? (
+                              <>
+                                <mark className="mark-orange">
+                                  “{docGuideA.passages[0].quote}”
+                                </mark>{" "}
+                                <span className="text-[12px] font-sans text-locked">
+                                  (p. {docGuideA.passages[0].page_no})
+                                </span>
+                              </>
+                            ) : (
+                              docGuideA.core_thesis
+                            )}
+                          </td>
+                          <td className="p-3.5 font-serif-academic">
+                            {docGuideB.passages[0] ? (
+                              <>
+                                <mark className="mark-orange">
+                                  “{docGuideB.passages[0].quote}”
+                                </mark>{" "}
+                                <span className="text-[12px] font-sans text-locked">
+                                  (p. {docGuideB.passages[0].page_no})
+                                </span>
+                              </>
+                            ) : (
+                              docGuideB.core_thesis
+                            )}
+                          </td>
+                          <td className="p-3.5 text-[13px] text-ink">
+                            Use o primeiro para fundamentar o conceito-base e o segundo para expandir o mecanismo observado.
+                          </td>
+                        </tr>
+
+                        <tr>
+                          <td className="p-3.5 font-bold text-ink">
+                            2. Papel Científico Predominante
+                          </td>
+                          <td className="p-3.5">
+                            <span className="rounded bg-purple px-2 py-0.5 text-[12px] font-bold text-paper">
+                              {docGuideA.passages[0]?.role_label ?? "Base Teórica"}
+                            </span>
+                          </td>
+                          <td className="p-3.5">
+                            <span className="rounded bg-done px-2 py-0.5 text-[12px] font-bold text-paper">
+                              {docGuideB.passages[0]?.role_label ?? "Achado Complementar"}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-[13px] text-ink">
+                            Combinar papéis distintos evita o “fichamento em vagão de trem” no capítulo.
+                          </td>
+                        </tr>
+
+                        <tr>
+                          <td className="p-3.5 font-bold text-ink">
+                            3. Conceitos em Jogo
+                          </td>
+                          <td className="p-3.5">
+                            {docGuideA.concepts.map((c) => c.label).join(", ") || "—"}
+                          </td>
+                          <td className="p-3.5">
+                            {docGuideB.concepts.map((c) => c.label).join(", ") || "—"}
+                          </td>
+                          <td className="p-3.5 text-[13px] text-purple font-bold">
+                            Pergunta Socrática: Qual é o elo causal entre os conceitos de {docGuideA.title} e os de {docGuideB.title} no recorte do seu TCC?
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         {data === null && !error && (
           <p className="py-8 text-[15px] text-locked">Carregando mapa de conhecimento…</p>
