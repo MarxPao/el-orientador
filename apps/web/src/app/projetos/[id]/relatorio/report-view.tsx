@@ -1,16 +1,21 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  AdvisorReport,
   ApiError,
   api,
-  AdvisorReport,
+  GAP_STATUS_LABELS,
+  Gap,
   getToken,
+  MapData,
+  MapNode,
   Project,
   WORK_LABELS,
 } from "@/lib/api";
+import { AppHeader } from "@/components/app-header";
+import { AlertBanner, Button, StatusBadge } from "@/components/ui";
 
 function formatDate(isoStr: string | null | undefined): string {
   if (!isoStr) return "-";
@@ -24,6 +29,7 @@ export default function ReportView({ id }: { id: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [reports, setReports] = useState<AdvisorReport[]>([]);
   const [currentReport, setCurrentReport] = useState<AdvisorReport | null>(null);
+  const [mapNodes, setMapNodes] = useState<MapNode[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -38,11 +44,13 @@ export default function ReportView({ id }: { id: string }) {
     Promise.all([
       api<Project>(`/projects/${id}`),
       api<AdvisorReport[]>(`/projects/${id}/reports`),
+      api<MapData>(`/projects/${id}/map`).catch(() => ({ nodes: [], edges: [] })),
     ])
-      .then(([projData, reportsData]) => {
+      .then(([projData, reportsData, mapData]) => {
         if (cancelled) return;
         setProject(projData);
         setReports(reportsData);
+        setMapNodes(mapData.nodes ?? []);
         if (reportsData.length > 0) {
           setCurrentReport(reportsData[0]);
         }
@@ -58,6 +66,11 @@ export default function ReportView({ id }: { id: string }) {
     };
   }, [id, router]);
 
+  const labelOf = useMemo(
+    () => new Map(mapNodes.map((n) => [n.id, n.label])),
+    [mapNodes]
+  );
+
   async function handleGenerateReport() {
     setGenerating(true);
     setError(null);
@@ -67,7 +80,7 @@ export default function ReportView({ id }: { id: string }) {
       });
       setReports((prev) => [created, ...prev]);
       setCurrentReport(created);
-      setNotice("Novo instantâneo de progresso gerado com sucesso.");
+      setNotice("Relatório de progresso atualizado com sucesso.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao gerar relatório.");
     } finally {
@@ -78,294 +91,356 @@ export default function ReportView({ id }: { id: string }) {
   const payload = currentReport?.payload;
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-8">
-      {/* Header (No print for nav buttons) */}
-      <header className="flex flex-wrap items-baseline justify-between gap-4 border-b border-ink/10 pb-4 print:border-none">
-        <div>
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink/60">
-            Governança & Supervisão Acadêmica
-          </span>
-          <h1 className="font-serif-academic text-3xl font-bold text-ink">
-            Relatório de Progresso para Orientação
-          </h1>
-          <p className="mt-1 text-xs text-ink/70">
-            {project?.title} · {project?.work ? WORK_LABELS[project.work] : "Projeto"}
-          </p>
-        </div>
+    <div className="min-h-screen flex flex-col bg-paper text-ink">
+      <AppHeader projectId={id} />
 
-        <div className="flex items-center gap-3 text-xs print:hidden">
-          <Link href={`/projetos/${id}/editor`} className="text-ink/70 hover:text-ink underline">
-            Editor
-          </Link>
-          <Link href={`/projetos/${id}/arvore`} className="text-ink/70 hover:text-ink underline">
-            Árvore
-          </Link>
-          <Link href={`/projetos/${id}/mapa`} className="text-ink/70 hover:text-ink underline">
-            Mapa
-          </Link>
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="rounded border border-ink/30 px-3 py-1.5 font-medium text-ink hover:bg-paper"
-          >
-            Imprimir / Salvar PDF
-          </button>
-          <button
-            type="button"
-            disabled={generating}
-            onClick={handleGenerateReport}
-            className="rounded bg-ink px-3 py-1.5 font-medium text-white hover:bg-ink/90 disabled:opacity-50"
-          >
-            {generating ? "Gerando…" : "Atualizar Instantâneo"}
-          </button>
-        </div>
-      </header>
-
-      {/* Snapshot selector */}
-      {reports.length > 1 && (
-        <div className="mt-4 flex items-center gap-2 text-xs print:hidden">
-          <span className="text-ink/60">Histórico de instantâneos:</span>
-          <select
-            value={currentReport?.id}
-            onChange={(e) => {
-              const selected = reports.find((r) => r.id === e.target.value);
-              if (selected) setCurrentReport(selected);
-            }}
-            className="rounded border border-ink/20 bg-white px-2.5 py-1 text-xs"
-          >
-            {reports.map((r, i) => (
-              <option key={r.id} value={r.id}>
-                Instantâneo #{reports.length - i} — {formatDate(r.created_at)}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {error && (
-        <p role="alert" className="mt-4 text-xs text-danger">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="mt-4 text-xs font-medium text-done">
-          {notice}
-        </p>
-      )}
-
-      {!payload ? (
-        <div className="mt-8 rounded-lg border border-ink/15 bg-paper/40 p-8 text-center text-xs text-ink/60">
-          <p>Nenhum instantâneo de progresso gerado ainda.</p>
-          <button
-            type="button"
-            disabled={generating}
-            onClick={handleGenerateReport}
-            className="mt-3 rounded bg-ink px-4 py-2 font-medium text-white"
-          >
-            {generating ? "Gerando…" : "Gerar Primeiro Relatório"}
-          </button>
-        </div>
-      ) : (
-        <div className="mt-6 space-y-8 text-xs leading-relaxed text-ink">
-          {/* Section 1: Identification */}
-          <section className="rounded-lg border border-ink/15 bg-white p-5 space-y-3">
-            <h2 className="font-serif-academic text-base font-bold text-ink border-b border-ink/10 pb-2">
-              1. Identificação do Projeto & Metas
-            </h2>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div>
-                <span className="text-[10px] uppercase text-ink/50 font-medium">Instituição</span>
-                <p className="font-medium text-ink">{(payload.project.institution as string) || "Não informada"}</p>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-ink/50 font-medium">Formato</span>
-                <p className="font-medium text-ink">
-                  {WORK_LABELS[(payload.project.work as string) || "tcc"]}
-                </p>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-ink/50 font-medium">Prazo Final</span>
-                <p className="font-medium text-ink">
-                  {formatDate(payload.project.deadline as string)}
-                </p>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-ink/50 font-medium">Dedicação Semanal</span>
-                <p className="font-medium text-ink">
-                  {(payload.project.weekly_hours as number) || 10} horas/semana
-                </p>
-              </div>
-            </div>
-
-            {Boolean(payload.project.research_problem) && (
-              <div className="rounded border border-ink/10 bg-paper/40 p-3 mt-2">
-                <span className="font-semibold text-ink/70">Problema de Pesquisa Central:</span>
-                <p className="mt-1 italic">{payload.project.research_problem as string}</p>
-              </div>
-            )}
-          </section>
-
-          {/* Section 2: Progress Tree Breakdown */}
-          <section className="rounded-lg border border-ink/15 bg-white p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-ink/10 pb-2">
-              <h2 className="font-serif-academic text-base font-bold text-ink">
-                2. Progresso na Árvore Metodológica
-              </h2>
-              <div className="flex gap-3 text-[11px]">
-                <span className="text-done font-medium">
-                  {payload.progress_tree.completed_count} concluída(s)
-                </span>
-                <span className="text-ink/60 font-medium">
-                  {payload.progress_tree.skipped_count} pulada(s) com aviso
-                </span>
-                <span className="text-available font-medium">
-                  {payload.progress_tree.pending_count} pendente(s)
-                </span>
-              </div>
-            </div>
-
-            {/* Completed */}
-            <div>
-              <h3 className="font-semibold text-ink/80 text-[11px] uppercase tracking-wider mb-2">
-                Etapas Concluídas ({payload.progress_tree.completed.length})
-              </h3>
-              {payload.progress_tree.completed.length === 0 ? (
-                <p className="text-ink/50 italic">Nenhuma etapa concluída até o momento.</p>
-              ) : (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {payload.progress_tree.completed.map((node) => (
-                    <div key={node.key} className="rounded border border-done/30 bg-done/5 p-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-ink">{node.title}</span>
-                        <span className="text-[10px] text-done font-semibold">Concluído</span>
-                      </div>
-                      <span className="text-[10px] text-ink/50 capitalize">Fase: {node.phase}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Skipped with Conscious Warning (Crucial for advisor transparency!) */}
-            {payload.progress_tree.skipped_with_warning.length > 0 && (
-              <div className="border-t border-ink/10 pt-3">
-                <h3 className="font-semibold text-gap text-[11px] uppercase tracking-wider mb-2">
-                  Etapas Puladas com Registro de Aviso Consciente ({payload.progress_tree.skipped_with_warning.length})
-                </h3>
-                <div className="space-y-2">
-                  {payload.progress_tree.skipped_with_warning.map((node) => (
-                    <div key={node.key} className="rounded border border-gap/30 bg-gap/5 p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-ink">{node.title}</span>
-                        <span className="rounded bg-gap/10 px-2 py-0.5 text-[10px] font-semibold text-gap">
-                          Pulada
-                        </span>
-                      </div>
-                      <p className="mt-1 text-[11px] text-ink/80">
-                        <strong>Motivo registrado pelo aluno: </strong>
-                        {node.skipped_reason}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Section 3: Knowledge Map Summary */}
-          <section className="rounded-lg border border-ink/15 bg-white p-5 space-y-4">
-            <h2 className="font-serif-academic text-base font-bold text-ink border-b border-ink/10 pb-2">
-              3. Mapa de Conhecimento, Evidências e Lacunas
-            </h2>
-
-            <div className="grid grid-cols-3 gap-3 text-center">
-              <div className="rounded border border-ink/10 p-3 bg-paper/40">
-                <div className="text-xl font-bold text-ink">{payload.knowledge_map.documents_count}</div>
-                <div className="text-[10px] text-ink/60 uppercase">Artigos Analisados</div>
-              </div>
-              <div className="rounded border border-ink/10 p-3 bg-paper/40">
-                <div className="text-xl font-bold text-ink">{payload.knowledge_map.verified_claims_count}</div>
-                <div className="text-[10px] text-ink/60 uppercase">Citações Verificadas</div>
-              </div>
-              <div className="rounded border border-ink/10 p-3 bg-paper/40">
-                <div className="text-xl font-bold text-ink">{payload.knowledge_map.confirmed_relations_count}</div>
-                <div className="text-[10px] text-ink/60 uppercase">Relações Confirmadas</div>
-              </div>
-            </div>
-
-            {/* Rejected Relations */}
-            {payload.knowledge_map.rejected_relations.length > 0 && (
-              <div className="border-t border-ink/10 pt-3">
-                <h3 className="font-semibold text-ink/70 text-[11px] uppercase tracking-wider mb-2">
-                  Relações Rejeitadas pelo Aluno (Memória Permanente de Decisões)
-                </h3>
-                <ul className="space-y-1.5">
-                  {payload.knowledge_map.rejected_relations.map((rel, i) => (
-                    <li key={i} className="rounded border border-ink/10 p-2 text-[11px]">
-                      <span>{rel.source} ↮ {rel.target} ({rel.relation})</span>
-                      {rel.user_note && (
-                        <p className="mt-0.5 text-ink/60 italic">Nota: &quot;{rel.user_note}&quot;</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Gaps Found */}
-            {payload.knowledge_map.gaps.length > 0 && (
-              <div className="border-t border-ink/10 pt-3">
-                <h3 className="font-semibold text-available text-[11px] uppercase tracking-wider mb-2">
-                  Lacunas de Pesquisa Investigadas em Bases Externas ({payload.knowledge_map.gaps.length})
-                </h3>
-                <ul className="space-y-1.5">
-                  {payload.knowledge_map.gaps.map((gap, i) => (
-                    <li key={i} className="rounded border border-available/30 bg-available/5 p-2 text-[11px]">
-                      <span className="font-medium text-ink">{gap.concept_a} ↔ {gap.concept_b}</span>
-                      <span className="ml-2 text-ink/60">({gap.status})</span>
-                      {gap.note && <p className="mt-0.5 text-ink/70 italic">&quot;{gap.note}&quot;</p>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </section>
-
-          {/* Section 4: AI Governance & Audit Log */}
-          <section className="rounded-lg border border-ink/15 bg-white p-5 space-y-3">
-            <h2 className="font-serif-academic text-base font-bold text-ink border-b border-ink/10 pb-2">
-              4. Auditoria de Governança e Uso de IA
-            </h2>
-            <p className="text-[11px] text-ink/80 leading-relaxed">
-              O sistema adere às regras éticas da orientação acadêmica: nenhuma afirmação entra sem citação literal
-              verificada deterministicamente contra o PDF original, e nenhum capítulo completo é redigido pela IA.
+      <main className="mx-auto w-full max-w-[1360px] flex-1 px-6 py-8 sm:px-10 space-y-6">
+        {/* Cabeçalho do Relatório */}
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-5 print:border-none">
+          <div>
+            <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+              Governança & Supervisão Acadêmica
+            </span>
+            <h1 className="mt-1 font-display text-3xl sm:text-[36px] text-ink">
+              Relatório de progresso para orientação
+            </h1>
+            <p className="mt-1 text-[15px] text-locked">
+              {project?.title} · {project?.work ? WORK_LABELS[project.work] : "Projeto"}
             </p>
+          </div>
 
-            <div className="rounded border border-ink/10 overflow-hidden">
-              <table className="w-full text-left text-[11px]">
-                <thead className="bg-paper border-b border-ink/10 font-semibold text-ink/70">
-                  <tr>
-                    <th className="p-2">Ação</th>
-                    <th className="p-2">Modelo</th>
-                    <th className="p-2">Versão Prompt</th>
-                    <th className="p-2">Data/Hora</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink/10">
-                  {payload.ai_usage_audit.logs.map((log, i) => (
-                    <tr key={i} className="hover:bg-paper/50">
-                      <td className="p-2 font-mono">{log.action}</td>
-                      <td className="p-2 text-ink/70">{log.model || "system"}</td>
-                      <td className="p-2 text-ink/60">{log.prompt_version || "-"}</td>
-                      <td className="p-2 text-ink/50">{formatDate(log.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="flex flex-wrap items-center gap-3 print:hidden">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={generating}
+              onClick={handleGenerateReport}
+            >
+              {generating ? "Atualizando…" : "Atualizar relatório"}
+            </Button>
+
+            {/* Único botão principal roxo da tela */}
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => window.print()}
+            >
+              Imprimir / Salvar PDF
+            </Button>
+          </div>
+        </header>
+
+        {/* Seletor de Histórico */}
+        {reports.length > 1 && (
+          <div className="flex flex-wrap items-center gap-3 text-[15px] print:hidden">
+            <label htmlFor="report-snapshot-select" className="font-medium text-locked">
+              Histórico de relatórios:
+            </label>
+            <select
+              id="report-snapshot-select"
+              value={currentReport?.id}
+              onChange={(e) => {
+                const selected = reports.find((r) => r.id === e.target.value);
+                if (selected) setCurrentReport(selected);
+              }}
+              className="h-[44px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
+            >
+              {reports.map((r, i) => (
+                <option key={r.id} value={r.id}>
+                  Relatório #{reports.length - i} — {formatDate(r.created_at)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {error && <AlertBanner variant="error">{error}</AlertBanner>}
+        {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
+
+        {!payload ? (
+          <div className="rounded-[16px] border border-borda bg-superficie p-8 text-[15px] text-locked space-y-4">
+            <p>Nenhum relatório de progresso foi gerado para este projeto ainda.</p>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={generating}
+              onClick={handleGenerateReport}
+            >
+              {generating ? "Gerando…" : "Atualizar relatório"}
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
+            {/* Coluna Principal (7 colunas): Identificação + Progresso na Árvore */}
+            <div className="lg:col-span-7 space-y-6">
+              {/* Seção 1: Identificação */}
+              <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4">
+                <h2 className="font-display text-2xl text-ink border-b border-borda pb-3">
+                  1. Identificação do projeto e metas
+                </h2>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-[15px]">
+                  <div>
+                    <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                      Instituição
+                    </span>
+                    <p className="mt-1 font-medium text-ink">
+                      {(payload.project.institution as string) || "Não informada"}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                      Formato
+                    </span>
+                    <p className="mt-1 font-medium text-ink">
+                      {WORK_LABELS[(payload.project.work as string) || "tcc"]}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                      Prazo final
+                    </span>
+                    <p className="mt-1 font-medium text-ink">
+                      {formatDate(payload.project.deadline as string)}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                      Dedicação semanal
+                    </span>
+                    <p className="mt-1 font-medium text-ink">
+                      {(payload.project.weekly_hours as number) || 10} horas/semana
+                    </p>
+                  </div>
+                </div>
+
+                {Boolean(payload.project.research_problem) && (
+                  <div className="rounded-[12px] border border-borda bg-paper p-4">
+                    <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                      Problema de pesquisa central:
+                    </span>
+                    <p className="mt-1 font-serif-academic text-[17px] italic text-ink">
+                      {payload.project.research_problem as string}
+                    </p>
+                  </div>
+                )}
+              </section>
+
+              {/* Seção 2: Progresso na Árvore Metodológica */}
+              <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-borda pb-3">
+                  <h2 className="font-display text-2xl text-ink">
+                    2. Progresso na árvore metodológica
+                  </h2>
+                  <div className="flex flex-wrap gap-2">
+                    <StatusBadge
+                      status="done"
+                      label={`${payload.progress_tree.completed_count} concluída(s)`}
+                    />
+                    {payload.progress_tree.skipped_count > 0 && (
+                      <StatusBadge
+                        status="skipped"
+                        label={`${payload.progress_tree.skipped_count} pulada(s)`}
+                      />
+                    )}
+                    <StatusBadge
+                      status="available"
+                      label={`${payload.progress_tree.pending_count} pendente(s)`}
+                    />
+                  </div>
+                </div>
+
+                {/* Etapas Concluídas */}
+                <div>
+                  <h3 className="text-[13px] font-bold uppercase tracking-wider text-locked mb-3">
+                    Etapas concluídas ({payload.progress_tree.completed.length})
+                  </h3>
+                  {payload.progress_tree.completed.length === 0 ? (
+                    <p className="text-[15px] text-locked italic">
+                      Nenhuma etapa concluída até o momento.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      {payload.progress_tree.completed.map((node) => (
+                        <div
+                          key={node.key}
+                          className="rounded-[12px] border-2 border-done bg-paper/40 p-3.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-[15px] font-bold text-ink">{node.title}</span>
+                            <StatusBadge status="done" />
+                          </div>
+                          <span className="mt-1 block text-[13px] text-locked capitalize">
+                            Fase: {node.phase}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Etapas Puladas com Registro de Aviso Consciente */}
+                {payload.progress_tree.skipped_with_warning.length > 0 && (
+                  <div className="border-t border-borda pt-4">
+                    <h3 className="text-[13px] font-bold uppercase tracking-wider text-purple mb-3">
+                      Etapas puladas com registro de aviso consciente (
+                      {payload.progress_tree.skipped_with_warning.length})
+                    </h3>
+                    <div className="space-y-3">
+                      {payload.progress_tree.skipped_with_warning.map((node) => (
+                        <div
+                          key={node.key}
+                          className="rounded-[12px] border border-purple/40 bg-skipped-bg p-4"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[15px] font-bold text-ink">{node.title}</span>
+                            <StatusBadge status="skipped" label="Pulada" />
+                          </div>
+                          <p className="mt-2 text-[15px] text-ink">
+                            <strong>Motivo registrado pelo aluno: </strong>
+                            {node.skipped_reason}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
-          </section>
-        </div>
-      )}
-    </main>
+
+            {/* Coluna Direita (5 colunas): Mapa de Conhecimento + Auditoria de IA */}
+            <div className="lg:col-span-5 space-y-6">
+              {/* Seção 3: Mapa de Conhecimento, Evidências e Lacunas */}
+              <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-5">
+                <h2 className="font-display text-2xl text-ink border-b border-borda pb-3">
+                  3. Mapa, evidências e lacunas
+                </h2>
+
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="rounded-[12px] border border-borda p-3.5 bg-paper">
+                    <div className="font-display text-2xl text-ink">
+                      {payload.knowledge_map.documents_count}
+                    </div>
+                    <div className="mt-1 text-[13px] font-bold uppercase text-locked">
+                      Artigos
+                    </div>
+                  </div>
+                  <div className="rounded-[12px] border border-borda p-3.5 bg-paper">
+                    <div className="font-display text-2xl text-ink">
+                      {payload.knowledge_map.verified_claims_count}
+                    </div>
+                    <div className="mt-1 text-[13px] font-bold uppercase text-locked">
+                      Citações
+                    </div>
+                  </div>
+                  <div className="rounded-[12px] border border-borda p-3.5 bg-paper">
+                    <div className="font-display text-2xl text-ink">
+                      {payload.knowledge_map.confirmed_relations_count}
+                    </div>
+                    <div className="mt-1 text-[13px] font-bold uppercase text-locked">
+                      Relações
+                    </div>
+                  </div>
+                </div>
+
+                {/* Relações Rejeitadas */}
+                {payload.knowledge_map.rejected_relations.length > 0 && (
+                  <div className="border-t border-borda pt-4">
+                    <h3 className="text-[13px] font-bold uppercase tracking-wider text-locked mb-2.5">
+                      Relações rejeitadas pelo aluno (memória de decisões)
+                    </h3>
+                    <ul className="space-y-2 text-[15px]">
+                      {payload.knowledge_map.rejected_relations.map((rel, i) => (
+                        <li
+                          key={i}
+                          className="rounded-[10px] border border-borda bg-paper/40 p-3"
+                        >
+                          <span className="font-medium text-ink">
+                            {labelOf.get(rel.source) ?? rel.source} ↮{" "}
+                            {labelOf.get(rel.target) ?? rel.target} ({rel.relation})
+                          </span>
+                          {rel.user_note && (
+                            <p className="mt-1 text-[14px] text-locked italic">
+                              Nota: &quot;{rel.user_note}&quot;
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Lacunas Investigadas (Nomes dos Conceitos em vez de UUIDs) */}
+                {payload.knowledge_map.gaps.length > 0 && (
+                  <div className="border-t border-borda pt-4">
+                    <h3 className="text-[13px] font-bold uppercase tracking-wider text-purple mb-2.5">
+                      Lacunas de pesquisa investigadas ({payload.knowledge_map.gaps.length})
+                    </h3>
+                    <ul className="space-y-2.5 text-[15px]">
+                      {payload.knowledge_map.gaps.map((gap, i) => {
+                        const nameA = labelOf.get(gap.concept_a) ?? gap.concept_a;
+                        const nameB = labelOf.get(gap.concept_b) ?? gap.concept_b;
+                        const statusLabel =
+                          GAP_STATUS_LABELS[gap.status as Gap["status"]] ?? gap.status;
+                        return (
+                          <li
+                            key={i}
+                            className="rounded-[12px] border-2 border-dotted border-purple bg-paper/50 p-3.5 space-y-1.5"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-bold text-ink">
+                                {nameA} <span className="text-purple">↔</span> {nameB}
+                              </span>
+                              <StatusBadge status="gap" label={statusLabel} />
+                            </div>
+                            {gap.note && (
+                              <p className="text-[14px] text-ink italic">
+                                &quot;{gap.note}&quot;
+                              </p>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </section>
+
+              {/* Seção 4: Auditoria de Governança e Uso de IA */}
+              <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4">
+                <h2 className="font-display text-2xl text-ink border-b border-borda pb-3">
+                  4. Auditoria de uso de IA
+                </h2>
+                <p className="text-[15px] text-ink leading-relaxed">
+                  Nenhuma afirmação entra sem citação literal verificada por código contra o PDF original, e nenhum capítulo completo é redigido pela IA.
+                </p>
+
+                <div className="rounded-[12px] border border-borda overflow-x-auto">
+                  <table className="w-full text-left text-[14px]">
+                    <thead className="bg-paper border-b border-borda text-[13px] font-bold uppercase tracking-wider text-locked">
+                      <tr>
+                        <th className="p-3">Ação</th>
+                        <th className="p-3">Modelo</th>
+                        <th className="p-3">Prompt</th>
+                        <th className="p-3">Data</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-borda">
+                      {payload.ai_usage_audit.logs.map((log, i) => (
+                        <tr key={i} className="hover:bg-paper/40">
+                          <td className="p-3 font-mono text-ink">{log.action}</td>
+                          <td className="p-3 text-locked">{log.model || "sistema"}</td>
+                          <td className="p-3 text-locked">{log.prompt_version || "-"}</td>
+                          <td className="p-3 text-locked">{formatDate(log.created_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
   );
 }
