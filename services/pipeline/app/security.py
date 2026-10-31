@@ -1,4 +1,4 @@
-﻿"""Password hashing (stdlib scrypt) and JWT helpers. Secrets come from the environment only."""
+"""Password hashing (stdlib scrypt) and JWT helpers. Secrets come from the environment only."""
 from __future__ import annotations
 
 import base64
@@ -46,6 +46,38 @@ def create_token(user_id: str) -> str:
 def decode_token(token: str) -> str | None:
     """Return the user id, or None if the token is invalid or expired."""
     try:
-        return jwt.decode(token, _secret(), algorithms=["HS256"])["sub"]
+        payload = jwt.decode(token, _secret(), algorithms=["HS256"])
+        if payload.get("scope") == "advisor_share":
+            return None
+        return payload["sub"]
+    except jwt.PyJWTError:
+        return None
+
+
+SHARE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
+
+
+def create_share_token(project_id: str) -> str:
+    """Create a signed read/comment share token for the human advisor."""
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": project_id,
+            "scope": "advisor_share",
+            "iat": now,
+            "exp": now + SHARE_TOKEN_TTL_SECONDS,
+        },
+        _secret(),
+        algorithm="HS256",
+    )
+
+
+def decode_share_token(token: str) -> str | None:
+    """Return the shared project_id, or None if the token is invalid or expired."""
+    try:
+        payload = jwt.decode(token, _secret(), algorithms=["HS256"])
+        if payload.get("scope") != "advisor_share":
+            return None
+        return payload.get("sub")
     except jwt.PyJWTError:
         return None

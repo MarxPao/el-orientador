@@ -186,3 +186,36 @@ def test_complete_beta_lifecycle(client: TestClient):
     assert export_res.status_code == 200
     assert export_res.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert len(export_res.content) > 1000  # Valid binary DOCX document with cover and AI usage declaration
+
+    # 10. Verified Project Claims & Magic Share Link for Human Advisor
+    claims_res = client.get(f"/projects/{project_id}/claims", headers=headers)
+    assert claims_res.status_code == 200
+    assert isinstance(claims_res.json(), list)
+
+    share_res = client.post(f"/projects/{project_id}/share-link", headers=headers)
+    assert share_res.status_code == 200
+    share_token = share_res.json()["token"]
+    assert share_res.json()["share_path"] == f"/orientador/{share_token}"
+
+    # Advisor accesses shared view without needing a user account
+    shared_view = client.get(f"/shared/{share_token}")
+    assert shared_view.status_code == 200
+    shared_body = shared_view.json()
+    assert shared_body["project"]["id"] == project_id
+    assert len(shared_body["sections"]) >= 1
+
+    # Advisor leaves an anchored comment on a manuscript section via magic link
+    shared_comment_res = client.post(
+        f"/shared/{share_token}/comments",
+        json={
+            "section_id": sec_id,
+            "author_name": "Profa. Dra. Helena Costa",
+            "author_email": "helena.costa@ufjf.br",
+            "anchor_quote": "Este trabalho investiga a evasão escolar.",
+            "content": "Qual recorte temporal e empírico sustenta esta afirmação inicial?",
+        },
+    )
+    assert shared_comment_res.status_code == 201
+    created_comment = shared_comment_res.json()
+    assert "Trecho em revisão" in created_comment["content"]
+    assert "Qual recorte temporal" in created_comment["content"]

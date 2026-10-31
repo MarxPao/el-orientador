@@ -22,7 +22,15 @@ from .gaps import detect_gaps
 from .metadata import FetchJson, InvalidDOI, LookupFailed, NotFound, http_fetch_json, lookup_doi, normalize_doi
 from .pipeline.relate import suggest_edges
 from .repo import DocumentExists, EdgeExists, EmailTaken, InMemoryRepo, PostgresRepo, Repo
-from .security import TOKEN_TTL_SECONDS, create_token, decode_token, hash_password, verify_password
+from .security import (
+    TOKEN_TTL_SECONDS,
+    create_share_token,
+    create_token,
+    decode_share_token,
+    decode_token,
+    hash_password,
+    verify_password,
+)
 from .tree import initial_nodes, load_template, merge_template_with_nodes, resolve_node_states
 from .gate import run_gate_turn
 from .pipeline.llm import LLMClient
@@ -144,6 +152,14 @@ class CommentIn(BaseModel):
 class CommentUpdateIn(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=5000)
     resolved: bool | None = None
+
+
+class SharedCommentIn(BaseModel):
+    section_id: str
+    author_name: str = Field(min_length=2, max_length=120)
+    author_email: EmailStr
+    content: str = Field(min_length=1, max_length=5000)
+    anchor_quote: str | None = Field(default=None, max_length=500)
 
 
 def create_app(
@@ -344,6 +360,33 @@ def create_app(
         if not doc or doc["project_id"] != project_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Documento não encontrado.")
         return repo.list_claims(document_id)
+
+    @app.get("/projects/{project_id}/claims")
+    def list_all_project_claims(project_id: str, user: dict = Depends(current_user)):
+        """List all verified claims across project documents with bibliographic metadata for inline citations."""
+        accessible_project(user, project_id)
+        docs = {d["id"]: d for d in repo.list_documents(project_id)}
+        out = []
+        for c in repo.list_project_claims(project_id):
+            doc = docs.get(c["document_id"]) or repo.get_document(c["document_id"]) or {}
+            out.append(
+                {
+                    "id": c["id"],
+                    "document_id": c["document_id"],
+                    "document_title": doc.get("title"),
+                    "authors": doc.get("authors") or [],
+                    "year": doc.get("year"),
+                    "statement": c["statement"],
+                    "quote": c["quote"],
+                    "page_no": c["page_no"],
+                    "concepts": (
+                        [{"id": c["concept_id"], "label": c["concept"]}]
+                        if c.get("concept_id")
+                        else []
+                    ),
+                }
+            )
+        return out
 
     @app.get("/projects/{project_id}/map")
     def knowledge_map(project_id: str, user: dict = Depends(current_user)):
@@ -847,5 +890,77 @@ def create_app(
         accessible_project(user, project_id)
         repo.delete_section_comment(comment_id)
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Shareable Advisor Review Link (Magic Link without login friction)
+    # ------------------------------------------------------------------
+    @app.post("/projects/{project_id}/share-link")
+    def create_advisor_share_link(project_id: str, user: dict = Depends(current_user)):
+        """Generate a signed shareable link so the human advisor can inspect the report and leave comments."""
+        accessible_project(user, project_id)
+        token = create_share_token(project_id)
+        repo.log_ai_usage(project_id, "share_report", None, "system", "advisor_share_v1")
+        return {"token": token, "share_path": f"/orientador/{token}"}
+
+    def _project_from_share_token(token: str) -> tuple[str, dict]:
+        project_id = decode_share_token(token)
+        if not project_id:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "Link de compartilhamento inválido ou expirado.",
+            )
+        project = repo.get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Projeto não encontrado.")
+        return project_id, project
+
+    @app.get("/shared/{token}")
+    def get_shared_project_view(token: str):
+        """Public token-authenticated view of the 1-page report, concepts, and manuscript sections for the human advisor."""
+        project_id, project = _project_from_share_token(token)
+        payload = generate_advisor_report_payload(repo, project_id, project)
+        concepts = repo.list_concepts(project_id)
+        raw_sections = repo.list_sections(project_id)
+        if not raw_sections:
+            for title, pos in DEFAULT_SECTIONS:
+                repo.create_section(project_id, title=title, parent_id=None, position=pos)
+            raw_sections = repo.list_sections(project_id)
+        sections_out = []
+        for s in raw_sections:
+            sections_out.append(
+                {
+                    "id": s["id"],
+                    "title": s["title"],
+                    "position": s["position"],
+                    "content": s.get("content") or {},
+                    "concept_ids": s.get("concept_ids") or [],
+                    "comments": repo.list_section_comments(s["id"]),
+                }
+            )
+        return {
+            "project": project,
+            "report_payload": payload,
+            "concepts": concepts,
+            "sections": sections_out,
+        }
+
+    @app.post("/shared/{token}/comments", status_code=201)
+    def post_shared_advisor_comment(token: str, body: SharedCommentIn):
+        """Allow the human advisor to record a comment or Socratic question on a manuscript section via magic link."""
+        project_id, _ = _project_from_share_token(token)
+        sec = repo.get_section(project_id, body.section_id)
+        if not sec:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Seção não encontrada.")
+        # Register email as project advisor so the editor styles their bubble in Advisor Purple (#4B2A7B)
+        repo.invite_advisor(project_id, body.author_email, True)
+        formatted_content = body.content.strip()
+        if body.anchor_quote and body.anchor_quote.strip():
+            formatted_content = f'[Trecho em revisão: "{body.anchor_quote.strip()}"]\n{formatted_content}'
+        return repo.create_section_comment(
+            section_id=body.section_id,
+            author_email=body.author_email,
+            author_name=body.author_name.strip(),
+            content=formatted_content,
+        )
 
     return app

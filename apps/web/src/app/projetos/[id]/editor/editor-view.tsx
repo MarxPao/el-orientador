@@ -13,6 +13,7 @@ import {
   getToken,
   MapNode,
   Project,
+  ProjectClaim,
   Section,
   SectionComment,
 } from "@/lib/api";
@@ -37,6 +38,20 @@ const COHERENCE_WARNING_LABELS: Record<CoherenceWarning["type"], string> = {
   documento_sem_alegacoes: "DOCUMENTO SEM ALEGAÇÕES",
 };
 
+function formatClaimCitation(claim: ProjectClaim): string {
+  const firstAuthor = claim.authors?.[0]
+    ? claim.authors[0].split(" ").slice(-1)[0]
+    : (claim.document_title ?? "Fonte").split(" ").slice(0, 2).join(" ");
+  const yearPart = claim.year ? `, ${claim.year}` : "";
+  return `(${firstAuthor}${yearPart}, p. ${claim.page_no})`;
+}
+
+function parseAnchoredComment(raw: string): { anchor: string | null; body: string } {
+  const match = raw.match(/^\[Trecho em revisão:\s*"([^"]+)"\]\n?([\s\S]*)$/);
+  if (!match) return { anchor: null, body: raw };
+  return { anchor: match[1], body: match[2] };
+}
+
 export default function EditorView({ id }: { id: string }) {
   const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
@@ -44,6 +59,7 @@ export default function EditorView({ id }: { id: string }) {
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const [coherence, setCoherence] = useState<CoherenceWarning[]>([]);
   const [concepts, setConcepts] = useState<MapNode[]>([]);
+  const [claims, setClaims] = useState<ProjectClaim[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [activeTab, setActiveTab] = useState<"coherence" | "evidence" | "comments">("coherence");
@@ -51,6 +67,9 @@ export default function EditorView({ id }: { id: string }) {
   const [isExporting, setIsExporting] = useState(false);
   const [comments, setComments] = useState<SectionComment[]>([]);
   const [newComment, setNewComment] = useState("");
+  const [anchorQuote, setAnchorQuote] = useState<string | null>(null);
+  const [showCitePicker, setShowCitePicker] = useState(false);
+  const [citeQuery, setCiteQuery] = useState("");
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [advisorEmail, setAdvisorEmail] = useState("");
   const [advisors, setAdvisors] = useState<AdvisorMember[]>([]);
@@ -71,7 +90,7 @@ export default function EditorView({ id }: { id: string }) {
     }
   }, [id]);
 
-  // Tiptap Editor initialization (Source Serif 4, corpo 18-20px, entrelinha ~1.55)
+  // Tiptap Editor initialization (Source Serif 4, corpo 18-20px, entrelinha ~1.58)
   const editor = useEditor({
     extensions: [StarterKit],
     immediatelyRender: false,
@@ -118,13 +137,15 @@ export default function EditorView({ id }: { id: string }) {
       api<Section[]>(`/projects/${id}/sections`),
       api<{ nodes: MapNode[] }>(`/projects/${id}/map`),
       api<CoherenceWarning[]>(`/projects/${id}/coherence`),
+      api<ProjectClaim[]>(`/projects/${id}/claims`).catch(() => [] as ProjectClaim[]),
     ])
-      .then(([projData, secData, mapData, cohData]) => {
+      .then(([projData, secData, mapData, cohData, claimsData]) => {
         if (cancelled) return;
         setProject(projData);
         setSections(secData);
         setConcepts(mapData.nodes || []);
         setCoherence(cohData);
+        setClaims(claimsData);
         if (secData.length > 0 && !selectedSectionId) {
           setSelectedSectionId(secData[0].id);
         }
@@ -175,19 +196,78 @@ export default function EditorView({ id }: { id: string }) {
     };
   }, [id]);
 
+  const filteredClaims = useMemo(() => {
+    const q = citeQuery.trim().toLowerCase();
+    if (!q) return claims;
+    return claims.filter(
+      (c) =>
+        c.quote.toLowerCase().includes(q) ||
+        c.statement.toLowerCase().includes(q) ||
+        (c.document_title ?? "").toLowerCase().includes(q) ||
+        c.concepts.some((co) => co.label.toLowerCase().includes(q))
+    );
+  }, [claims, citeQuery]);
+
+  async function handleInsertClaimCitation(claim: ProjectClaim) {
+    if (!editor || !activeSection) return;
+    const refText = formatClaimCitation(claim);
+    editor
+      .chain()
+      .focus()
+      .insertContent(` ${refText} `)
+      .run();
+    setShowCitePicker(false);
+    setCiteQuery("");
+
+    // Automatically link the claim's concept to the active section
+    const conceptId = claim.concepts?.[0]?.id;
+    if (conceptId && !activeSection.concept_ids.includes(conceptId)) {
+      const nextList = [...activeSection.concept_ids, conceptId];
+      try {
+        const updated = await api<Section>(
+          `/projects/${id}/sections/${activeSection.id}`,
+          {
+            method: "PATCH",
+            body: { concept_ids: nextList },
+          }
+        );
+        setSections((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        void refreshCoherence();
+      } catch {
+        // Ignore link error if already updated
+      }
+    }
+  }
+
+  function handleAnchorSelectionForComment() {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    const selectedText = editor.state.doc.textBetween(from, to, " ").trim();
+    const fallbackText = editor.getText().trim().slice(0, 140);
+    const chosen = selectedText || fallbackText;
+    if (chosen) {
+      setAnchorQuote(chosen.slice(0, 220));
+    }
+    setActiveTab("comments");
+  }
+
   async function handleAddComment(e: React.FormEvent) {
     e.preventDefault();
     if (!newComment.trim() || !selectedSectionId) return;
+    const finalContent = anchorQuote
+      ? `[Trecho em revisão: "${anchorQuote}"]\n${newComment.trim()}`
+      : newComment.trim();
     try {
       const created = await api<SectionComment>(
         `/projects/${id}/sections/${selectedSectionId}/comments`,
         {
           method: "POST",
-          body: { content: newComment.trim() },
+          body: { content: finalContent },
         }
       );
       setComments((prev) => [...prev, created]);
       setNewComment("");
+      setAnchorQuote(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao adicionar comentário.");
     }
@@ -426,7 +506,7 @@ export default function EditorView({ id }: { id: string }) {
             aria-label="Editor de texto acadêmico"
             className="flex flex-col rounded-[16px] border border-borda bg-superficie lg:col-span-5"
           >
-            {/* Barra de Formatação */}
+            {/* Barra de Formatação + @Citação Verificada + Marca-Texto em Revisão */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda px-4 py-2.5 text-[15px]">
               <div className="flex flex-wrap items-center gap-1">
                 <button
@@ -475,17 +555,6 @@ export default function EditorView({ id }: { id: string }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => editor?.chain().focus().toggleBulletList().run()}
-                  className={`min-h-[40px] rounded-[8px] px-2.5 cursor-pointer ${
-                    editor?.isActive("bulletList")
-                      ? "bg-purple text-paper"
-                      : "text-ink hover:bg-paper"
-                  }`}
-                >
-                  Lista
-                </button>
-                <button
-                  type="button"
                   onClick={() => editor?.chain().focus().toggleBlockquote().run()}
                   className={`min-h-[40px] rounded-[8px] px-2.5 cursor-pointer ${
                     editor?.isActive("blockquote")
@@ -493,12 +562,35 @@ export default function EditorView({ id }: { id: string }) {
                       : "text-ink hover:bg-paper"
                   }`}
                 >
-                  Citação
+                  Recuo
+                </button>
+
+                {/* Botão @ Citar trecho verificado */}
+                <button
+                  type="button"
+                  onClick={() => setShowCitePicker((prev) => !prev)}
+                  className={`min-h-[40px] rounded-[8px] border px-3 text-[14px] font-bold cursor-pointer transition ${
+                    showCitePicker
+                      ? "border-purple bg-purple text-paper"
+                      : "border-purple text-purple hover:bg-skipped-bg"
+                  }`}
+                >
+                  @ Citar fonte ({claims.length})
+                </button>
+
+                {/* Botão Ancorar trecho com Marca-Texto Laranja */}
+                <button
+                  type="button"
+                  onClick={handleAnchorSelectionForComment}
+                  title="Selecionar trecho do texto para ancorar comentário ou pergunta"
+                  className="min-h-[40px] rounded-[8px] bg-orange px-3 text-[14px] font-bold text-ink cursor-pointer hover:opacity-95"
+                >
+                  Grifar trecho
                 </button>
               </div>
 
               <div className="flex items-center gap-3 text-[14px] text-locked">
-                <span className="truncate max-w-[160px]">
+                <span className="truncate max-w-[140px]">
                   {activeSection ? activeSection.title : "Nenhuma seção"}
                 </span>
                 <span
@@ -518,6 +610,67 @@ export default function EditorView({ id }: { id: string }) {
                 </span>
               </div>
             </div>
+
+            {/* Gaveta de Inserção de @Citação Verificada */}
+            {showCitePicker && (
+              <div className="border-b border-borda bg-paper p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                    Inserir citação apoiada em trecho literal verificado
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowCitePicker(false)}
+                    className="text-[14px] font-bold text-locked hover:text-ink cursor-pointer"
+                  >
+                    Fechar ✕
+                  </button>
+                </div>
+
+                <input
+                  type="search"
+                  value={citeQuery}
+                  onChange={(e) => setCiteQuery(e.target.value)}
+                  placeholder="Buscar por conceito, autor, documento ou palavra do trecho…"
+                  className="w-full h-[42px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
+                />
+
+                {filteredClaims.length === 0 ? (
+                  <p className="text-[14px] text-locked py-2">
+                    Nenhum trecho verificado encontrado para este filtro.
+                  </p>
+                ) : (
+                  <ul className="max-h-[240px] overflow-y-auto space-y-2 pr-1">
+                    {filteredClaims.map((claim) => (
+                      <li
+                        key={claim.id}
+                        className="rounded-[10px] border border-borda bg-superficie p-3 space-y-1.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[14px] font-bold text-purple">
+                            {formatClaimCitation(claim)} ·{" "}
+                            {claim.concepts.map((c) => c.label).join(", ")}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void handleInsertClaimCitation(claim)}
+                            className="rounded-[8px] border border-purple px-2.5 py-1 text-[13px] font-bold text-purple hover:bg-skipped-bg cursor-pointer"
+                          >
+                            Inserir citação
+                          </button>
+                        </div>
+                        <blockquote className="font-serif-academic text-[15px] leading-snug text-ink">
+                          <mark className="mark-orange">{claim.quote}</mark>
+                        </blockquote>
+                        <p className="text-[13px] text-locked">
+                          {claim.document_title ?? "Documento"} · página {claim.page_no}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {/* Corpo do Manuscrito */}
             <div className="flex-1 overflow-y-auto">
@@ -607,43 +760,75 @@ export default function EditorView({ id }: { id: string }) {
               </div>
             )}
 
-            {/* Aba: Conceitos / Evidências */}
+            {/* Aba: Conceitos / Evidências com trechos literais */}
             {activeTab === "evidence" && (
-              <div className="space-y-3 text-[15px]">
+              <div className="space-y-3 text-[15px] max-h-[520px] overflow-y-auto pr-1">
                 <p className="text-[14px] text-locked">
-                  Conceitos do mapa. Marque para vincular à seção ativa (
-                  <strong>{activeSection?.title ?? "nenhuma"}</strong>):
+                  Conceitos do mapa e seus trechos literais verificados para a seção{" "}
+                  <strong>{activeSection?.title ?? "ativa"}</strong>:
                 </p>
                 {concepts.map((concept) => {
                   const isLinked = activeSection?.concept_ids.includes(concept.id) ?? false;
+                  const conceptClaims = claims.filter((c) =>
+                    c.concepts.some((co) => co.id === concept.id)
+                  );
                   return (
-                    <label
+                    <div
                       key={concept.id}
-                      className={`flex min-h-[44px] items-center justify-between rounded-[10px] p-3 text-[15px] cursor-pointer transition border ${
+                      className={`rounded-[12px] p-3.5 transition border space-y-2.5 ${
                         isLinked
-                          ? "border-2 border-purple bg-paper/60 text-ink font-bold"
-                          : "border-borda bg-superficie text-ink hover:bg-paper/30"
+                          ? "border-2 border-purple bg-paper/60 text-ink"
+                          : "border-borda bg-superficie text-ink"
                       }`}
                     >
-                      <div className="flex items-center gap-2.5 truncate">
-                        <input
-                          type="checkbox"
-                          checked={isLinked}
-                          onChange={() => void toggleConceptLink(concept.id)}
-                          className="h-4 w-4 accent-purple"
-                        />
-                        <span className="truncate">{concept.label}</span>
-                      </div>
-                      <span className="text-[13px] font-medium text-locked shrink-0">
-                        {concept.n_claims} citação(ões)
-                      </span>
-                    </label>
+                      <label className="flex min-h-[36px] items-center justify-between cursor-pointer">
+                        <div className="flex items-center gap-2.5 truncate">
+                          <input
+                            type="checkbox"
+                            checked={isLinked}
+                            onChange={() => void toggleConceptLink(concept.id)}
+                            className="h-4 w-4 accent-purple"
+                          />
+                          <span className="font-bold truncate">{concept.label}</span>
+                        </div>
+                        <span className="text-[13px] font-medium text-locked shrink-0">
+                          {concept.n_claims} citação(ões)
+                        </span>
+                      </label>
+
+                      {conceptClaims.length > 0 && (
+                        <div className="space-y-2 border-t border-borda pt-2.5">
+                          {conceptClaims.map((cl) => (
+                            <div
+                              key={cl.id}
+                              className="rounded-[8px] border border-borda bg-superficie p-2.5 space-y-1.5"
+                            >
+                              <blockquote className="font-serif-academic text-[14px] leading-snug text-ink">
+                                <mark className="mark-orange">{cl.quote}</mark>
+                              </blockquote>
+                              <div className="flex items-center justify-between gap-2 text-[13px]">
+                                <span className="text-locked truncate">
+                                  {cl.document_title ?? "Documento"} · p. {cl.page_no}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleInsertClaimCitation(cl)}
+                                  className="shrink-0 font-bold text-purple underline cursor-pointer"
+                                >
+                                  Citar no texto
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
             )}
 
-            {/* Aba: Comentários (Orientador em balão roxo, Aluno em cartão branco) */}
+            {/* Aba: Comentários (Orientador em balão roxo, Aluno em cartão branco, com trecho ancorado em laranja) */}
             {activeTab === "comments" && (
               <div className="flex flex-col justify-between gap-4 text-[15px]">
                 <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
@@ -659,15 +844,27 @@ export default function EditorView({ id }: { id: string }) {
                       const authorLabel = isAdvisor
                         ? `Orientador · ${comment.author_name || comment.author_email}`
                         : `Aluno · ${comment.author_name || comment.author_email}`;
+                      const parsed = parseAnchoredComment(comment.content);
 
                       return (
                         <div
                           key={comment.id}
                           className={comment.resolved ? "opacity-65" : ""}
                         >
+                          {parsed.anchor && (
+                            <div className="mb-1.5 rounded-t-[10px] border border-b-0 border-borda bg-paper px-3 py-2 text-[14px]">
+                              <span className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                                Trecho em trabalho:
+                              </span>
+                              <mark className="mark-orange font-serif-academic text-[15px]">
+                                “{parsed.anchor}”
+                              </mark>
+                            </div>
+                          )}
+
                           {isAdvisor ? (
                             <AdvisorBubble label={authorLabel}>
-                              <p className="whitespace-pre-wrap">{comment.content}</p>
+                              <p className="whitespace-pre-wrap">{parsed.body}</p>
                               <div className="mt-2 flex items-center justify-between text-[13px] text-paper/85">
                                 <span>{comment.resolved ? "Resolvido" : "Em aberto"}</span>
                                 <button
@@ -683,7 +880,7 @@ export default function EditorView({ id }: { id: string }) {
                             </AdvisorBubble>
                           ) : (
                             <StudentCard label={authorLabel}>
-                              <p className="whitespace-pre-wrap">{comment.content}</p>
+                              <p className="whitespace-pre-wrap">{parsed.body}</p>
                               <div className="mt-2 flex items-center justify-between text-[13px] text-locked">
                                 <span>{comment.resolved ? "Resolvido" : "Em aberto"}</span>
                                 <button
@@ -709,6 +906,24 @@ export default function EditorView({ id }: { id: string }) {
                   onSubmit={handleAddComment}
                   className="border-t border-borda pt-4 flex flex-col gap-3"
                 >
+                  {anchorQuote && (
+                    <div className="flex items-start justify-between gap-2 rounded-[10px] border border-borda bg-paper p-2.5 text-[14px]">
+                      <div>
+                        <span className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                          Ancorado no trecho:
+                        </span>
+                        <mark className="mark-orange font-serif-academic">“{anchorQuote}”</mark>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAnchorQuote(null)}
+                        className="text-[13px] font-bold text-locked hover:text-ink cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
                   <textarea
                     rows={2}
                     value={newComment}
