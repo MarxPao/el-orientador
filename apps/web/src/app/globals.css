@@ -1,56 +1,83 @@
 @import "tailwindcss";
 
-/* Brand tokens: manual de marca v2 (rascunho) and docs/04-UX-SPEC.md.
-   Red = brand only (logo). Purple = interface and the advisor's questions.
-   Orange = highlighter / fill, never text. */
+/* ==========================================================================
+   El Orientador — Manual de Marca v2 (Tokens Visuais)
+   Contrastes medidos sobre o papel crema (#F6EEDC):
+   - Tinta (#241E1A): 14,25:1
+   - Roxo (#4B2A7B): 9,49:1
+   - Vermelho (#B3261E): 5,66:1 (Exclusivo para a marca: logotipo e carimbo)
+   - Oliva (#5F6E2F): 4,84:1 (Concluído)
+   - Cinza quente (#6F665D): 4,87:1 (Bloqueado / texto secundário)
+   - Laranja (#E8761E): 2,58:1 sobre papel (NUNCA usar como cor de texto;
+     apenas preenchimento com texto em tinta #241E1A por cima -> 5,52:1)
+   ========================================================================== */
+
 :root {
-  --ink: #241e1a;
   --paper: #f6eedc;
+  --ink: #241e1a;
   --brand-red: #b3261e;
   --orange: #e8761e;
   --purple: #4b2a7b;
-  --done: #5f6e2f; /* oliva: concluído */
-  --available: #4b2a7b; /* roxo: ação principal, links, foco (interface) */
-  --locked: #6f665d; /* cinza quente: bloqueado, texto secundário */
-  --gap: #4b2a7b; /* lacuna: roxo pontilhado, com ícone e rótulo */
-  --danger: #b3261e; /* erro: sempre com ícone/texto, nunca só cor */
+  --done: #5f6e2f;
+  --locked: #6f665d;
+  --border: #d9cdb4;
+  --surface: #ffffff;
+  --skipped-bg: #ede7f3;
+
+  /* Aliases semânticos */
+  --available: var(--purple);
+  --gap: var(--purple);
+  --danger: var(--ink);
 }
 
 @theme inline {
-  --color-ink: var(--ink);
   --color-paper: var(--paper);
+  --color-ink: var(--ink);
   --color-brand-red: var(--brand-red);
   --color-orange: var(--orange);
   --color-purple: var(--purple);
   --color-done: var(--done);
-  --color-available: var(--available);
   --color-locked: var(--locked);
+  --color-border: var(--border);
+  --color-borda: var(--border);
+  --color-surface: var(--surface);
+  --color-superficie: var(--surface);
+  --color-skipped-bg: var(--skipped-bg);
+  --color-available: var(--available);
   --color-gap: var(--gap);
   --color-danger: var(--danger);
 }
 
 body {
-  background: var(--paper);
+  background-color: var(--paper);
   color: var(--ink);
-  font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-sans), "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
+/* Tipografia de letreiro: Alfa Slab One só possui peso 400 (nunca usar negrito). */
+.font-letreiro,
+.font-display {
+  font-family: var(--font-display), "Alfa Slab One", Georgia, serif;
+  font-weight: 400;
+}
+
+/* Tipografia de leitura longa e manuscrito: Source Serif 4. */
 .font-serif-academic {
-  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+  font-family: var(--font-serif), "Source Serif 4", Georgia, "Times New Roman", serif;
 }
 
-/* Provisional signboard face for the wordmark; replace once a licensed face is chosen. */
-.font-letreiro {
-  font-family: "Alfa Slab One", "Rockwell", "Roboto Slab", Georgia, serif;
-  letter-spacing: 0.02em;
-}
-
-/* Highlighter on the passage being worked on: ink text over orange (5.52:1). */
-mark {
-  background: color-mix(in srgb, var(--orange) 55%, transparent);
+/* Marca-texto do trecho em trabalho ou evidência: fundo laranja com texto tinta (5,52:1). */
+mark,
+.mark-orange {
+  background-color: var(--orange);
   color: var(--ink);
+  padding: 0.1em 0.35em;
+  border-radius: 0.2rem;
 }
 
+/* Foco visível em todos os elementos interativos. */
 :focus-visible {
   outline: 2px solid var(--purple);
   outline-offset: 2px;
