@@ -12,6 +12,7 @@ import {
   MapData,
   MapNode,
   Project,
+  ShareLinkResponse,
   WORK_LABELS,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
@@ -31,6 +32,8 @@ export default function ReportView({ id }: { id: string }) {
   const [currentReport, setCurrentReport] = useState<AdvisorReport | null>(null);
   const [mapNodes, setMapNodes] = useState<MapNode[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [sharePath, setSharePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -88,6 +91,31 @@ export default function ReportView({ id }: { id: string }) {
     }
   }
 
+  async function handleCreateShareLink() {
+    setSharing(true);
+    setError(null);
+    try {
+      const res = await api<ShareLinkResponse>(`/projects/${id}/share-link`, {
+        method: "POST",
+      });
+      setSharePath(res.share_path);
+      const fullUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}${res.share_path}`
+          : res.share_path;
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(fullUrl).catch(() => {});
+      }
+      setNotice(
+        "Link de revisão para o orientador gerado e copiado. O orientador pode abrir e comentar sem criar senha."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao gerar link de compartilhamento.");
+    } finally {
+      setSharing(false);
+    }
+  }
+
   const payload = currentReport?.payload;
 
   return (
@@ -113,6 +141,15 @@ export default function ReportView({ id }: { id: string }) {
             <Button
               type="button"
               variant="secondary"
+              disabled={sharing}
+              onClick={handleCreateShareLink}
+            >
+              {sharing ? "Gerando link…" : "Compartilhar link com orientador"}
+            </Button>
+
+            <Button
+              type="button"
+              variant="secondary"
               disabled={generating}
               onClick={handleGenerateReport}
             >
@@ -129,6 +166,29 @@ export default function ReportView({ id }: { id: string }) {
             </Button>
           </div>
         </header>
+
+        {sharePath && (
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-[12px] border border-purple bg-skipped-bg px-5 py-3.5 text-[15px] text-ink print:hidden">
+            <div>
+              <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                Link mágico para o orientador humano (sem necessidade de cadastro):
+              </span>
+              <p className="mt-0.5 font-mono text-[14px] text-ink break-all">
+                {typeof window !== "undefined"
+                  ? `${window.location.origin}${sharePath}`
+                  : sharePath}
+              </p>
+            </div>
+            <a
+              href={sharePath}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-[40px] items-center rounded-[8px] border border-purple bg-superficie px-3.5 text-[14px] font-bold text-purple hover:bg-paper"
+            >
+              Abrir visão do orientador →
+            </a>
+          </div>
+        )}
 
         {/* Seletor de Histórico */}
         {reports.length > 1 && (
