@@ -46,6 +46,10 @@ from .authorship import (
     draft_evidence_paragraph,
     polish_academic_text,
 )
+from .text_analysis import (
+    analyze_project_texts,
+    compare_and_connect_passages,
+)
 
 
 class WorkType(str, Enum):
@@ -179,6 +183,16 @@ class AiAssistIn(BaseModel):
 
 class ValidateAuthenticityIn(BaseModel):
     sync_prism: bool = False
+
+
+class TextCompareIn(BaseModel):
+    claim_a_id: str
+    claim_b_id: str
+    relation_type: Literal["corroboracao", "contraponto", "complementaridade", "lacuna"] = "complementaridade"
+    student_analysis: str | None = Field(default=None, max_length=1500)
+    section_id: str | None = None
+    intensity: int = Field(default=35, ge=0, le=100)
+    insert_into_section: bool = False
 
 
 def create_app(
@@ -406,6 +420,126 @@ def create_app(
                 }
             )
         return out
+
+    @app.get("/projects/{project_id}/text-analysis")
+    def get_project_text_analysis(project_id: str, user: dict = Depends(current_user)):
+        """Guided Text Analysis workspace: per-PDF dissection guides, rhetorical roles, Socratic study questions, and manuscript 'Boxcar Effect' audit."""
+        project = accessible_project(user, project_id)
+        docs = repo.list_documents(project_id)
+        docs_by_id = {d["id"]: d for d in docs}
+        raw_claims = []
+        for c in repo.list_project_claims(project_id):
+            doc = docs_by_id.get(c["document_id"]) or {}
+            raw_claims.append(
+                {
+                    "id": c["id"],
+                    "document_id": c["document_id"],
+                    "document_title": doc.get("title"),
+                    "authors": doc.get("authors") or [],
+                    "year": doc.get("year"),
+                    "statement": c["statement"],
+                    "quote": c["quote"],
+                    "page_no": c["page_no"],
+                    "concepts": (
+                        [{"id": c["concept_id"], "label": c["concept"]}]
+                        if c.get("concept_id")
+                        else []
+                    ),
+                }
+            )
+        sections = repo.list_sections(project_id)
+        return analyze_project_texts(project, docs, raw_claims, sections)
+
+    @app.post("/projects/{project_id}/text-analysis/compare")
+    def post_compare_and_connect_texts(
+        project_id: str,
+        body: TextCompareIn,
+        user: dict = Depends(current_user),
+    ):
+        """Compare two verified passages side by side, guide the student's analysis, and optionally weave them into a manuscript section."""
+        project = accessible_project(user, project_id)
+        all_claims = repo.list_project_claims(project_id)
+        claim_a = next((c for c in all_claims if c["id"] == body.claim_a_id), None)
+        claim_b = next((c for c in all_claims if c["id"] == body.claim_b_id), None)
+        if not claim_a or not claim_b:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "Selecione dois trechos verificados válidos para comparar e conectar.",
+            )
+
+        doc_a = repo.get_document(claim_a["document_id"]) or {}
+        doc_b = repo.get_document(claim_b["document_id"]) or {}
+        sec = repo.get_section(project_id, body.section_id) if body.section_id else None
+        sec_title = sec["title"] if sec else project.get("title", "Referencial Teórico")
+
+        comparison = compare_and_connect_passages(
+            claim_a=claim_a,
+            claim_b=claim_b,
+            doc_a=doc_a,
+            doc_b=doc_b,
+            relation_type=body.relation_type,
+            student_analysis=body.student_analysis,
+            section_title=sec_title,
+            intensity=body.intensity,
+            client=client,
+        )
+
+        updated_sec = None
+        if body.insert_into_section and sec:
+            owned_project(user, project_id)
+            content_dict = dict(sec.get("content") or {"type": "doc", "content": []})
+            if not isinstance(content_dict.get("content"), list):
+                content_dict = {"type": "doc", "content": []}
+            auth_meta = dict(content_dict.get("_authorship") or {"polished_words": 0, "ai_drafted_words": 0})
+            auth_meta["last_intensity"] = body.intensity
+
+            words_added = count_words(comparison["synthesis_text"])
+            student_words = count_words(body.student_analysis or "")
+            if body.intensity <= 55:
+                # Guided scaffold: student's analysis + verified quotes + academic connectors (counted as light review/polish)
+                auth_meta["polished_words"] = int(auth_meta.get("polished_words", 0)) + max(
+                    1, words_added - student_words
+                )
+            else:
+                # Assisted dialectical synthesis (>55%)
+                auth_meta["ai_drafted_words"] = int(auth_meta.get("ai_drafted_words", 0)) + max(
+                    1, words_added - student_words
+                )
+
+            content_dict["content"] = list(content_dict["content"]) + [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": comparison["synthesis_text"]}],
+                }
+            ]
+            content_dict["_authorship"] = auth_meta
+            updated_sec = repo.update_section(project_id, sec["id"], content=content_dict)
+
+            # Link both concepts to the section automatically
+            sec_concepts = set(sec.get("concept_ids") or [])
+            for c_item in (claim_a, claim_b):
+                if c_item.get("concept_id"):
+                    sec_concepts.add(c_item["concept_id"])
+            repo.set_section_concepts(sec["id"], list(sec_concepts))
+            updated_sec["concept_ids"] = list(sec_concepts)
+
+        repo.log_ai_usage(
+            project_id,
+            "compare_texts",
+            sec["id"] if sec else None,
+            getattr(client, "model", "dialectical_comparator_v1"),
+            f"compare_{body.relation_type}_{body.intensity}",
+        )
+
+        all_sections = repo.list_sections(project_id)
+        verified_quotes = [c.get("quote", "") for c in all_claims]
+        return {
+            **comparison,
+            "updated_section": updated_sec,
+            "project_authorship": compute_project_authorship(
+                all_sections, verified_quotes=verified_quotes
+            ),
+        }
 
     @app.get("/projects/{project_id}/map")
     def knowledge_map(project_id: str, user: dict = Depends(current_user)):

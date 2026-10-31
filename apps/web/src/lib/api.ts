@@ -441,3 +441,97 @@ export type SharedProjectData = {
     comments: SectionComment[];
   }[];
 };
+
+export type EnrichedClaim = {
+  id: string;
+  document_id: string;
+  document_title: string;
+  authors: string[];
+  year: number | null;
+  page_no: number;
+  citation_ref: string;
+  statement: string;
+  quote: string;
+  concepts: { id: string; label: string }[];
+  role_code: "definicao_conceitual" | "evidencia_empirica" | "metodo_recorte" | "limite_contraponto";
+  role_label: string;
+  reading_tip: string;
+  socratic_prompts: string[];
+};
+
+export type DocumentGuide = {
+  document_id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  status: string;
+  claims_count: number;
+  core_thesis: string;
+  concepts: { id: string; label: string }[];
+  shared_bridges: {
+    concept_id: string;
+    concept_label: string;
+    other_document_id: string;
+    other_document_title: string;
+  }[];
+  study_questions: string[];
+  passages: EnrichedClaim[];
+};
+
+export type ManuscriptParagraphAudit = {
+  index: number;
+  excerpt: string;
+  citation_count: number;
+  status_code: "analise_integrada" | "vagao_de_trem" | "sem_ancoragem";
+  status_label: string;
+  feedback: string;
+};
+
+export type TextAnalysisWorkspace = {
+  document_guides: DocumentGuide[];
+  enriched_claims: EnrichedClaim[];
+  manuscript_audit: {
+    total_boxcar_paragraphs: number;
+    total_integrated_paragraphs: number;
+    sections: {
+      section_id: string;
+      section_title: string;
+      paragraph_count: number;
+      boxcar_count: number;
+      integrated_count: number;
+      paragraphs: ManuscriptParagraphAudit[];
+    }[];
+  };
+};
+
+export type TextCompareResult = {
+  relation_type: "corroboracao" | "contraponto" | "complementaridade" | "lacuna";
+  relation_label: string;
+  intensity: number;
+  mode_used: "scaffold_socratico" | "sintese_assistida";
+  passage_a: {
+    id: string;
+    citation_ref: string;
+    concept: string;
+    quote: string;
+    role_label: string;
+    reading_tip: string;
+  };
+  passage_b: {
+    id: string;
+    citation_ref: string;
+    concept: string;
+    quote: string;
+    role_label: string;
+    reading_tip: string;
+  };
+  comparison_matrix: {
+    shared_terms: string[];
+    convergence: string;
+    difference: string;
+    guiding_question: string;
+  };
+  synthesis_text: string;
+  updated_section?: Section | null;
+  project_authorship: AuthorshipPrism;
+};

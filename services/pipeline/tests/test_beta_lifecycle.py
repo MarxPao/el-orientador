@@ -319,3 +319,48 @@ def test_complete_beta_lifecycle(client: TestClient):
     assert isinstance(sec_auth["forensics"]["measured_ai_score"], int)
     assert isinstance(sec_auth["forensics"]["burstiness_score"], int)
     assert len(sec_auth["forensics"]["sentences"]) >= 1
+
+    # 13. Guided Text Analysis (PDF Dissection, Socratic Prompts, Boxcar Audit & Dialectical Comparison)
+    repo.add_claims(
+        doc_id,
+        [
+            {
+                "concept": "Formação docente",
+                "statement": "Entretanto, a aplicação de metodologias ativas exige formação continuada.",
+                "quote": "Todavia, sem formação continuada, o método ativo enfrenta limitações severas.",
+                "page_verified": 19,
+                "quote_verified": True,
+                "verify_method": "exact",
+            }
+        ],
+        model="test",
+        prompt_version="extract_claims v0.1",
+    )
+
+    ta_res = client.get(f"/projects/{project_id}/text-analysis", headers=headers)
+    assert ta_res.status_code == 200
+    ta_body = ta_res.json()
+    assert len(ta_body["document_guides"]) >= 1
+    assert len(ta_body["enriched_claims"]) >= 2
+    assert "manuscript_audit" in ta_body
+
+    claim_a_id = ta_body["enriched_claims"][0]["id"]
+    claim_b_id = ta_body["enriched_claims"][1]["id"]
+    cmp_res = client.post(
+        f"/projects/{project_id}/text-analysis/compare",
+        json={
+            "claim_a_id": claim_a_id,
+            "claim_b_id": claim_b_id,
+            "relation_type": "contraponto",
+            "student_analysis": "O impacto positivo depende diretamente da capacitação prévia dos professores",
+            "section_id": sec_id,
+            "intensity": 35,
+            "insert_into_section": True,
+        },
+        headers=headers,
+    )
+    assert cmp_res.status_code == 200
+    cmp_body = cmp_res.json()
+    assert cmp_body["mode_used"] == "scaffold_socratico"
+    assert "comparison_matrix" in cmp_body
+    assert cmp_body["updated_section"] is not None

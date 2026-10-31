@@ -19,6 +19,8 @@ import {
   ProjectClaim,
   Section,
   SectionComment,
+  TextAnalysisWorkspace,
+  TextCompareResult,
   ValidateAuthenticityResponse,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
@@ -143,7 +145,16 @@ export default function EditorView({ id }: { id: string }) {
   const [claims, setClaims] = useState<ProjectClaim[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
-  const [activeTab, setActiveTab] = useState<"coherence" | "evidence" | "comments">("coherence");
+  const [activeTab, setActiveTab] = useState<"analysis" | "coherence" | "evidence" | "comments">("analysis");
+  const [analysisSubTab, setAnalysisSubTab] = useState<"dissect" | "compare" | "boxcar">("dissect");
+  const [textAnalysis, setTextAnalysis] = useState<TextAnalysisWorkspace | null>(null);
+  const [selectedDocGuideId, setSelectedDocGuideId] = useState<string>("");
+  const [claimAId, setClaimAId] = useState<string>("");
+  const [claimBId, setClaimBId] = useState<string>("");
+  const [relationType, setRelationType] = useState<"corroboracao" | "contraponto" | "complementaridade" | "lacuna">("complementaridade");
+  const [studentAnalysisNote, setStudentAnalysisNote] = useState<string>("");
+  const [compareResult, setCompareResult] = useState<TextCompareResult | null>(null);
+  const [comparingBusy, setComparingBusy] = useState<boolean>(false);
   const [newTitle, setNewTitle] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [comments, setComments] = useState<SectionComment[]>([]);
@@ -183,14 +194,18 @@ export default function EditorView({ id }: { id: string }) {
 
   const refreshCoherence = useCallback(async () => {
     try {
-      const [cohData, authData] = await Promise.all([
+      const [cohData, authData, analysisData] = await Promise.all([
         api<CoherenceWarning[]>(`/projects/${id}/coherence`),
         api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`).catch(() => null),
+        api<TextAnalysisWorkspace>(`/projects/${id}/text-analysis`).catch(() => null),
       ]);
       setCoherence(cohData);
       if (authData?.project) {
         setPrism(authData.project);
         setSectionPrisms(authData.sections || {});
+      }
+      if (analysisData) {
+        setTextAnalysis(analysisData);
       }
     } catch {
       // Quiet
@@ -246,8 +261,9 @@ export default function EditorView({ id }: { id: string }) {
       api<CoherenceWarning[]>(`/projects/${id}/coherence`),
       api<ProjectClaim[]>(`/projects/${id}/claims`).catch(() => [] as ProjectClaim[]),
       api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`).catch(() => null),
+      api<TextAnalysisWorkspace>(`/projects/${id}/text-analysis`).catch(() => null),
     ])
-      .then(([projData, secData, mapData, cohData, claimsData, authData]) => {
+      .then(([projData, secData, mapData, cohData, claimsData, authData, analysisData]) => {
         if (cancelled) return;
         setProject(projData);
         setSections(secData);
@@ -257,6 +273,19 @@ export default function EditorView({ id }: { id: string }) {
         if (authData?.project) {
           setPrism(authData.project);
           setSectionPrisms(authData.sections || {});
+        }
+        if (analysisData) {
+          setTextAnalysis(analysisData);
+          if (analysisData.document_guides.length > 0) {
+            setSelectedDocGuideId(analysisData.document_guides[0].document_id);
+          }
+          if (analysisData.enriched_claims.length >= 2) {
+            setClaimAId(analysisData.enriched_claims[0].id);
+            setClaimBId(analysisData.enriched_claims[1].id);
+          } else if (analysisData.enriched_claims.length === 1) {
+            setClaimAId(analysisData.enriched_claims[0].id);
+            setClaimBId(analysisData.enriched_claims[0].id);
+          }
         }
         if (secData.length > 0 && !selectedSectionId) {
           setSelectedSectionId(secData[0].id);
@@ -586,6 +615,68 @@ export default function EditorView({ id }: { id: string }) {
     ? sectionPrisms[activeSection.id] ?? prism
     : prism;
   const activeForensics = activeSectionPrism.forensics;
+
+  const activeDocGuide = useMemo(() => {
+    if (!textAnalysis || textAnalysis.document_guides.length === 0) return null;
+    return (
+      textAnalysis.document_guides.find((d) => d.document_id === selectedDocGuideId) ??
+      textAnalysis.document_guides[0]
+    );
+  }, [textAnalysis, selectedDocGuideId]);
+
+  const activeSectionAudit = useMemo(() => {
+    if (!textAnalysis || !activeSection) return null;
+    return (
+      textAnalysis.manuscript_audit.sections.find((s) => s.section_id === activeSection.id) ??
+      null
+    );
+  }, [textAnalysis, activeSection]);
+
+  async function handleCompareTexts(insertIntoSection: boolean = false) {
+    if (!claimAId || !claimBId) {
+      setError("Selecione dois trechos verificados (Trecho A e Trecho B) para comparar.");
+      return;
+    }
+    setComparingBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await api<TextCompareResult>(
+        `/projects/${id}/text-analysis/compare`,
+        {
+          method: "POST",
+          body: {
+            claim_a_id: claimAId,
+            claim_b_id: claimBId,
+            relation_type: relationType,
+            student_analysis: studentAnalysisNote.trim() || undefined,
+            section_id: activeSection?.id ?? undefined,
+            intensity: autonomyIntensity,
+            insert_into_section: insertIntoSection,
+          },
+        }
+      );
+      setCompareResult(res);
+      setPrism(res.project_authorship);
+      if (insertIntoSection && res.updated_section) {
+        const upSec = res.updated_section;
+        setSections((prev) => prev.map((s) => (s.id === upSec.id ? upSec : s)));
+        if (editor && upSec.content) {
+          editor.commands.setContent(upSec.content, { emitUpdate: false });
+        }
+        setNotice(
+          res.mode_used === "scaffold_socratico"
+            ? "Esqueleto analítico socrático com as duas citações verificadas inserido na seção atual!"
+            : "Parágrafo dialético comparando os dois autores inserido na seção e registrado no Prisma!"
+        );
+        void refreshCoherence();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao comparar trechos.");
+    } finally {
+      setComparingBusy(false);
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-paper text-ink">
@@ -1236,11 +1327,22 @@ export default function EditorView({ id }: { id: string }) {
             className="rounded-[16px] border border-borda bg-superficie p-5 lg:col-span-4 flex flex-col gap-4"
           >
             {/* Seletor de Abas */}
-            <div className="flex flex-wrap border-b border-borda gap-2 text-[15px]">
+            <div className="flex flex-wrap border-b border-borda gap-1.5 text-[14px]">
+              <button
+                type="button"
+                onClick={() => setActiveTab("analysis")}
+                className={`min-h-[44px] px-2.5 font-bold transition cursor-pointer border-b-2 ${
+                  activeTab === "analysis"
+                    ? "border-purple text-purple"
+                    : "border-transparent text-locked hover:text-ink"
+                }`}
+              >
+                Analisar & Conectar
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveTab("coherence")}
-                className={`min-h-[44px] px-3 font-bold transition cursor-pointer border-b-2 ${
+                className={`min-h-[44px] px-2.5 font-bold transition cursor-pointer border-b-2 ${
                   activeTab === "coherence"
                     ? "border-purple text-purple"
                     : "border-transparent text-locked hover:text-ink"
@@ -1251,7 +1353,7 @@ export default function EditorView({ id }: { id: string }) {
               <button
                 type="button"
                 onClick={() => setActiveTab("evidence")}
-                className={`min-h-[44px] px-3 font-bold transition cursor-pointer border-b-2 ${
+                className={`min-h-[44px] px-2.5 font-bold transition cursor-pointer border-b-2 ${
                   activeTab === "evidence"
                     ? "border-purple text-purple"
                     : "border-transparent text-locked hover:text-ink"
@@ -1262,7 +1364,7 @@ export default function EditorView({ id }: { id: string }) {
               <button
                 type="button"
                 onClick={() => setActiveTab("comments")}
-                className={`min-h-[44px] px-3 font-bold transition cursor-pointer border-b-2 ${
+                className={`min-h-[44px] px-2.5 font-bold transition cursor-pointer border-b-2 ${
                   activeTab === "comments"
                     ? "border-purple text-purple"
                     : "border-transparent text-locked hover:text-ink"
@@ -1271,6 +1373,415 @@ export default function EditorView({ id }: { id: string }) {
                 Comentários ({comments.length})
               </button>
             </div>
+
+            {/* Aba: Laboratório de Análise Guiada e Comparação de Textos */}
+            {activeTab === "analysis" && (
+              <div className="space-y-4 text-[14px] max-h-[640px] overflow-y-auto pr-1">
+                {/* Sub-seletor das 3 frentes de análise */}
+                <div className="grid grid-cols-3 gap-1.5 rounded-[10px] border border-borda bg-paper p-1">
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisSubTab("dissect")}
+                    className={`rounded-[8px] py-1.5 px-2 text-[12px] font-bold transition cursor-pointer ${
+                      analysisSubTab === "dissect"
+                        ? "bg-purple text-paper"
+                        : "text-ink hover:bg-superficie"
+                    }`}
+                  >
+                    1. Dissecar PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisSubTab("compare")}
+                    className={`rounded-[8px] py-1.5 px-2 text-[12px] font-bold transition cursor-pointer ${
+                      analysisSubTab === "compare"
+                        ? "bg-purple text-paper"
+                        : "text-ink hover:bg-superficie"
+                    }`}
+                  >
+                    2. Comparar A×B
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisSubTab("boxcar")}
+                    className={`rounded-[8px] py-1.5 px-2 text-[12px] font-bold transition cursor-pointer ${
+                      analysisSubTab === "boxcar"
+                        ? "bg-purple text-paper"
+                        : "text-ink hover:bg-superficie"
+                    }`}
+                  >
+                    3. Vagão de Trem
+                  </button>
+                </div>
+
+                {/* SUB-ABA 1: Guia de Leitura e Dissecação Estruturada de PDF */}
+                {analysisSubTab === "dissect" && (
+                  <div className="space-y-3">
+                    {!textAnalysis || textAnalysis.document_guides.length === 0 ? (
+                      <p className="text-[14px] text-locked">
+                        Envie um PDF no Mapa de Conhecimento para liberar o Guia de Leitura Analítica e Dissecação do Artigo.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="space-y-1">
+                          <label className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                            Escolha o artigo / PDF para analisar:
+                          </label>
+                          <select
+                            aria-label="Escolher documento para análise guiada"
+                            value={activeDocGuide?.document_id ?? ""}
+                            onChange={(e) => setSelectedDocGuideId(e.target.value)}
+                            className="w-full h-[40px] rounded-[8px] border border-borda bg-paper/60 px-2.5 text-[14px] font-bold text-ink"
+                          >
+                            {textAnalysis.document_guides.map((dg) => (
+                              <option key={dg.document_id} value={dg.document_id}>
+                                {dg.title} ({dg.year ?? "s.d."}) · {dg.claims_count} trechos
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {activeDocGuide && (
+                          <div className="space-y-3">
+                            {/* Tese Central */}
+                            <div className="rounded-[10px] border border-borda bg-paper/50 p-3 space-y-1">
+                              <span className="text-[11px] font-bold uppercase tracking-wider text-purple">
+                                Tese Central Identificada no Texto
+                              </span>
+                              <p className="text-[14px] font-medium text-ink leading-snug">
+                                {activeDocGuide.core_thesis}
+                              </p>
+                            </div>
+
+                            {/* Roteiro Socrático de Leitura Crítica */}
+                            <AdvisorBubble label="Roteiro para você analisar este artigo">
+                              <ul className="space-y-1.5 text-[13px] list-disc pl-4">
+                                {activeDocGuide.study_questions.map((q, idx) => (
+                                  <li key={idx}>{q}</li>
+                                ))}
+                              </ul>
+                            </AdvisorBubble>
+
+                            {/* Pontes automáticas com outros PDFs */}
+                            {activeDocGuide.shared_bridges.length > 0 && (
+                              <div className="rounded-[10px] border border-done bg-paper/40 p-2.5 space-y-1">
+                                <span className="text-[11px] font-bold uppercase tracking-wider text-done">
+                                  Pontes com outros PDFs da sua biblioteca
+                                </span>
+                                {activeDocGuide.shared_bridges.map((br, i) => (
+                                  <p key={i} className="text-[13px] text-ink">
+                                    Conecta o conceito <strong>{br.concept_label}</strong> com{" "}
+                                    <em>{br.other_document_title}</em>.
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Passagens Dissecadas por Papel Retórico-Científico */}
+                            <div className="space-y-2">
+                              <span className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                                Anatomia dos Trechos Verificados ({activeDocGuide.passages.length})
+                              </span>
+                              {activeDocGuide.passages.map((p) => (
+                                <div
+                                  key={p.id}
+                                  className="rounded-[10px] border border-borda bg-superficie p-3 space-y-2"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                    <span
+                                      className={`rounded-[6px] px-2 py-0.5 text-[11px] font-bold uppercase ${
+                                        p.role_code === "evidencia_empirica"
+                                          ? "bg-done text-paper"
+                                          : p.role_code === "limite_contraponto"
+                                          ? "bg-orange text-ink"
+                                          : "bg-purple text-paper"
+                                      }`}
+                                    >
+                                      {p.role_label}
+                                    </span>
+                                    <span className="text-[12px] font-bold text-locked">
+                                      {p.citation_ref}
+                                    </span>
+                                  </div>
+
+                                  <blockquote className="font-serif-academic text-[14px] leading-snug text-ink">
+                                    <mark className="mark-orange">{p.quote}</mark>
+                                  </blockquote>
+
+                                  <p className="text-[12px] text-ink bg-paper/60 rounded p-2">
+                                    <strong>Como analisar e usar:</strong> {p.reading_tip}
+                                  </p>
+
+                                  <div className="space-y-1 text-[12px] text-locked border-t border-borda pt-1.5">
+                                    {p.socratic_prompts.map((sp, idx) => (
+                                      <div key={idx}>• {sp}</div>
+                                    ))}
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setClaimAId(p.id);
+                                        setAnalysisSubTab("compare");
+                                      }}
+                                      className="rounded-[6px] border border-purple px-2 py-1 text-[12px] font-bold text-purple hover:bg-skipped-bg cursor-pointer"
+                                    >
+                                      Usar como Trecho A
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setClaimBId(p.id);
+                                        setAnalysisSubTab("compare");
+                                      }}
+                                      className="rounded-[6px] border border-purple px-2 py-1 text-[12px] font-bold text-purple hover:bg-skipped-bg cursor-pointer"
+                                    >
+                                      Usar como Trecho B
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* SUB-ABA 2: Mesa de Confronto & Costureiro Dialético (A vs. B) */}
+                {analysisSubTab === "compare" && (
+                  <div className="space-y-3">
+                    <p className="text-[13px] text-locked">
+                      Selecione dois trechos verificados para o Orientador ajudar você a analisar convergências, tensões e costurar o diálogo no capítulo:
+                    </p>
+
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                          Trecho A (Tese / Primeira Evidência):
+                        </label>
+                        <select
+                          aria-label="Selecionar Trecho A"
+                          value={claimAId}
+                          onChange={(e) => setClaimAId(e.target.value)}
+                          className="w-full h-[38px] rounded-[8px] border border-borda bg-paper/60 px-2 text-[13px] text-ink"
+                        >
+                          <option value="">Selecione um trecho verificado…</option>
+                          {(textAnalysis?.enriched_claims ?? []).map((ec) => (
+                            <option key={ec.id} value={ec.id}>
+                              {ec.citation_ref} [{ec.role_label}] — {ec.quote.slice(0, 55)}…
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                          Trecho B (Contraponto / Segunda Evidência):
+                        </label>
+                        <select
+                          aria-label="Selecionar Trecho B"
+                          value={claimBId}
+                          onChange={(e) => setClaimBId(e.target.value)}
+                          className="w-full h-[38px] rounded-[8px] border border-borda bg-paper/60 px-2 text-[13px] text-ink"
+                        >
+                          <option value="">Selecione um trecho verificado…</option>
+                          {(textAnalysis?.enriched_claims ?? []).map((ec) => (
+                            <option key={ec.id} value={ec.id}>
+                              {ec.citation_ref} [{ec.role_label}] — {ec.quote.slice(0, 55)}…
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                          Tipo de relação analítica que você quer construir:
+                        </label>
+                        <select
+                          aria-label="Selecionar tipo de relação analítica"
+                          value={relationType}
+                          onChange={(e) =>
+                            setRelationType(
+                              e.target.value as
+                                | "corroboracao"
+                                | "contraponto"
+                                | "complementaridade"
+                                | "lacuna"
+                            )
+                          }
+                          className="w-full h-[38px] rounded-[8px] border border-borda bg-paper/60 px-2 text-[13px] font-bold text-ink"
+                        >
+                          <option value="complementaridade">
+                            Complementaridade: Teoria (A) → Prática/Método (B)
+                          </option>
+                          <option value="corroboracao">
+                            Corroboração: B comprova e reforça A (A + B)
+                          </option>
+                          <option value="contraponto">
+                            Contraponto / Tensão: B mostra o limite de A (A vs. B)
+                          </option>
+                          <option value="lacuna">
+                            Ponte / Lacuna: Conectar dois eixos ainda isolados
+                          </option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-locked">
+                          Sua leitura crítica (o que você percebeu ao comparar os dois?):
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={studentAnalysisNote}
+                          onChange={(e) => setStudentAnalysisNote(e.target.value)}
+                          placeholder="Ex.: O primeiro autor define a base cognitiva, enquanto o segundo comprova o impacto na retenção escolar…"
+                          className="w-full rounded-[8px] border border-borda bg-superficie p-2.5 text-[13px] text-ink"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={comparingBusy || !claimAId || !claimBId}
+                          onClick={() => void handleCompareTexts(false)}
+                          className="flex-1"
+                        >
+                          {comparingBusy ? "Analisando…" : "Analisar e Comparar A × B"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Resultado da Matriz de Comparação + Costura Dialética */}
+                    {compareResult && (
+                      <div className="rounded-[12px] border-2 border-purple bg-paper/50 p-3.5 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-bold uppercase tracking-wider text-purple">
+                            Matriz de Triangulação: {compareResult.passage_a.citation_ref} ×{" "}
+                            {compareResult.passage_b.citation_ref}
+                          </span>
+                          <span className="rounded bg-purple px-2 py-0.5 text-[11px] font-bold text-paper">
+                            {compareResult.mode_used === "scaffold_socratico"
+                              ? "Esqueleto Socrático (≤55%)"
+                              : "Síntese Assistida (>55%)"}
+                          </span>
+                        </div>
+
+                        <div className="space-y-1.5 text-[13px]">
+                          <div className="rounded-[8px] border border-borda bg-superficie p-2.5">
+                            <strong className="text-done">Onde convergem:</strong>{" "}
+                            {compareResult.comparison_matrix.convergence}
+                          </div>
+                          <div className="rounded-[8px] border border-borda bg-superficie p-2.5">
+                            <strong className="text-purple">Diferença de papel / escopo:</strong>{" "}
+                            {compareResult.comparison_matrix.difference}
+                          </div>
+                        </div>
+
+                        <AdvisorBubble label="Pergunta para guiar sua síntese">
+                          <p className="text-[13px]">
+                            {compareResult.comparison_matrix.guiding_question}
+                          </p>
+                        </AdvisorBubble>
+
+                        <div className="rounded-[8px] border border-borda bg-superficie p-3 space-y-2">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-locked">
+                            {compareResult.mode_used === "scaffold_socratico"
+                              ? "Esqueleto com Conectivos + Citações Verificadas (para você completar)"
+                              : "Parágrafo Comparativo Costurado com Citações Verificadas"}
+                          </span>
+                          <p className="font-serif-academic text-[14px] leading-relaxed text-ink">
+                            {compareResult.synthesis_text}
+                          </p>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={comparingBusy || !activeSection}
+                            onClick={() => void handleCompareTexts(true)}
+                            className="w-full"
+                          >
+                            Inserir esta conexão na seção “{activeSection?.title ?? "atual"}”
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* SUB-ABA 3: Auditor de "Efeito Vagão de Trem" no Capítulo */}
+                {analysisSubTab === "boxcar" && (
+                  <div className="space-y-3">
+                    <div className="rounded-[10px] border border-borda bg-paper/60 p-3 space-y-1">
+                      <span className="text-[12px] font-bold uppercase tracking-wider text-purple">
+                        Auditoria de Integração Analítica · {activeSection?.title}
+                      </span>
+                      <p className="text-[13px] text-locked">
+                        Evite o “fichamento em vagão de trem” (parágrafos que citam apenas 1 autor solto sem diálogo nem análise crítica).
+                      </p>
+                    </div>
+
+                    {!activeSectionAudit || activeSectionAudit.paragraphs.length === 0 ? (
+                      <p className="text-[13px] text-locked">
+                        Escreva ao menos um parágrafo nesta seção para auditar a integração entre autores.
+                      </p>
+                    ) : (
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between text-[12px] font-bold">
+                          <span className="text-done">
+                            {activeSectionAudit.integrated_count} integrado(s)
+                          </span>
+                          <span className="text-ink">
+                            {activeSectionAudit.boxcar_count} em alerta “vagão de trem”
+                          </span>
+                        </div>
+
+                        {activeSectionAudit.paragraphs.map((pa) => (
+                          <div
+                            key={pa.index}
+                            className="rounded-[10px] border border-borda bg-superficie p-3 space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span
+                                className={`rounded-[6px] px-2 py-0.5 text-[11px] font-bold uppercase ${
+                                  pa.status_code === "analise_integrada"
+                                    ? "bg-done text-paper"
+                                    : pa.status_code === "vagao_de_trem"
+                                    ? "bg-orange text-ink"
+                                    : "bg-paper text-locked border border-borda"
+                                }`}
+                              >
+                                §{pa.index} · {pa.status_label}
+                              </span>
+                              <span className="text-[11px] font-bold text-locked">
+                                {pa.citation_count} citação(ões)
+                              </span>
+                            </div>
+
+                            <p className="font-serif-academic text-[13px] text-ink">
+                              “{pa.excerpt}”
+                            </p>
+                            <p className="text-[12px] text-locked">{pa.feedback}</p>
+
+                            {pa.status_code === "vagao_de_trem" && (
+                              <button
+                                type="button"
+                                onClick={() => setAnalysisSubTab("compare")}
+                                className="text-[12px] font-bold text-purple underline cursor-pointer"
+                              >
+                                Conectar com outro autor na Mesa A × B →
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Aba: Coerência */}
             {activeTab === "coherence" && (
