@@ -3,9 +3,8 @@
 import "@xyflow/react/dist/style.css";
 
 import { Background, Controls, MarkerType, ReactFlow, type Edge, type Node } from "@xyflow/react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   api,
@@ -19,6 +18,8 @@ import {
   RELATION_LABELS,
   STATUS_LABELS,
 } from "@/lib/api";
+import { AppHeader } from "@/components/app-header";
+import { AlertBanner, Button, CheckIcon, GapIcon, LockIcon } from "@/components/ui";
 
 type Status = MapLink["status"];
 
@@ -29,6 +30,30 @@ const STATUS_STYLE: Record<Status, { stroke: string; dash?: string }> = {
   rejected: { stroke: "#6F665D", dash: "2 4" },
 };
 
+function EdgeStatusPill({ status }: { status: Status }) {
+  if (status === "confirmed") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-done px-2.5 py-0.5 text-[13px] font-medium text-paper">
+        <CheckIcon className="h-3.5 w-3.5" />
+        <span>{STATUS_LABELS.confirmed}</span>
+      </span>
+    );
+  }
+  if (status === "suggested") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-orange px-2.5 py-0.5 text-[13px] font-medium text-ink">
+        <span>{STATUS_LABELS.suggested}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-[6px] border border-dashed border-locked/60 bg-paper px-2.5 py-0.5 text-[13px] font-medium text-locked">
+      <LockIcon className="h-3.5 w-3.5" />
+      <span>{STATUS_LABELS.rejected}</span>
+    </span>
+  );
+}
+
 export default function MapView({ id }: { id: string }) {
   const router = useRouter();
   const [data, setData] = useState<MapData | null>(null);
@@ -36,7 +61,11 @@ export default function MapView({ id }: { id: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const [shown, setShown] = useState<Record<Status, boolean>>({ confirmed: true, suggested: true, rejected: false });
+  const [shown, setShown] = useState<Record<Status, boolean>>({
+    confirmed: true,
+    suggested: true,
+    rejected: false,
+  });
   const [showLowConfidence, setShowLowConfidence] = useState(false);
   const [showGaps, setShowGaps] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -72,7 +101,10 @@ export default function MapView({ id }: { id: string }) {
     }
   }
 
-  async function decide(linkId: string, body: { action: "confirm" | "reject" | "edit"; relation?: string; note?: string }) {
+  async function decide(
+    linkId: string,
+    body: { action: "confirm" | "reject" | "edit"; relation?: string; note?: string }
+  ) {
     setDeciding(true);
     setEvidenceError(null);
     try {
@@ -80,7 +112,7 @@ export default function MapView({ id }: { id: string }) {
       setNotice(
         body.action === "reject"
           ? "Ligação rejeitada. Ela não será sugerida novamente."
-          : "Ligação confirmada.",
+          : "Ligação confirmada."
       );
       setReloadKey((k) => k + 1);
     } catch (err) {
@@ -94,13 +126,16 @@ export default function MapView({ id }: { id: string }) {
     setDecidingGap(true);
     setError(null);
     try {
-      await api<Gap>(`/projects/${id}/gaps/${gapId}`, { method: "PATCH", body: { status, note } });
+      await api<Gap>(`/projects/${id}/gaps/${gapId}`, {
+        method: "PATCH",
+        body: { status, note },
+      });
       setNotice(
         status === "adopted_as_problem"
           ? "Lacuna adotada como problema de pesquisa."
           : status === "dismissed"
           ? "Lacuna descartada."
-          : "Lacuna reaberta.",
+          : "Lacuna reaberta."
       );
       setReloadKey((k) => k + 1);
     } catch (err) {
@@ -131,20 +166,28 @@ export default function MapView({ id }: { id: string }) {
   }, [id, reloadKey, router]);
 
   const visibleLinks = useMemo(
-    () => (data?.edges ?? []).filter((e) => shown[e.status] && (showLowConfidence || e.display_by_default)),
-    [data, shown, showLowConfidence],
+    () =>
+      (data?.edges ?? []).filter(
+        (e) => shown[e.status] && (showLowConfidence || e.display_by_default)
+      ),
+    [data, shown, showLowConfidence]
   );
-  const hiddenLowConfidence = (data?.edges ?? []).filter((e) => !e.display_by_default && shown[e.status]).length;
-  const labelOf = useMemo(() => new Map((data?.nodes ?? []).map((n) => [n.id, n.label])), [data]);
+  const hiddenLowConfidence = (data?.edges ?? []).filter(
+    (e) => !e.display_by_default && shown[e.status]
+  ).length;
+  const labelOf = useMemo(
+    () => new Map((data?.nodes ?? []).map((n) => [n.id, n.label])),
+    [data]
+  );
 
   const visibleGaps = useMemo(
     () => (data?.gaps ?? []).filter((g) => g.status !== "dismissed"),
-    [data],
+    [data]
   );
 
   const { nodes, edges } = useMemo(() => {
     const list = data?.nodes ?? [];
-    const radius = Math.max(160, list.length * 45);
+    const radius = Math.max(165, list.length * 48);
     const posMap = new Map<string, { x: number; y: number }>();
 
     const conceptNodes: Node[] = list.map((n, i) => {
@@ -155,7 +198,16 @@ export default function MapView({ id }: { id: string }) {
         id: n.id,
         position: pos,
         data: { label: `${n.label} (${n.n_claims})` },
-        style: { border: "1px solid #241E1A", borderRadius: 6, background: "#fff", padding: 8, fontSize: 13, width: 170 },
+        style: {
+          border: "1.5px solid #241E1A",
+          borderRadius: 10,
+          background: "#FFFFFF",
+          padding: 10,
+          fontSize: 14,
+          fontWeight: 500,
+          color: "#241E1A",
+          width: 180,
+        },
       };
     });
 
@@ -172,15 +224,20 @@ export default function MapView({ id }: { id: string }) {
         gapNodes.push({
           id: gapNodeId,
           position: midPos,
-          data: { label: `[Lacuna] ${labelOf.get(g.concept_a)} ↔ ${labelOf.get(g.concept_b)}` },
+          data: {
+            label: `[Lacuna] ${labelOf.get(g.concept_a) ?? g.concept_a} ↔ ${
+              labelOf.get(g.concept_b) ?? g.concept_b
+            }`,
+          },
           style: {
             border: "2px dotted #4B2A7B",
-            borderRadius: 6,
+            borderRadius: 10,
             background: "#FFFFFF",
-            padding: 6,
-            fontSize: 11,
+            padding: 8,
+            fontSize: 13,
+            fontWeight: 500,
             color: "#4B2A7B",
-            width: 155,
+            width: 170,
             cursor: "pointer",
           },
         });
@@ -197,7 +254,7 @@ export default function MapView({ id }: { id: string }) {
             source: gapNodeId,
             target: g.concept_b,
             style: { stroke: "#4B2A7B", strokeWidth: 1.5, strokeDasharray: "2 4" },
-          },
+          }
         );
       });
     }
@@ -208,10 +265,12 @@ export default function MapView({ id }: { id: string }) {
         id: e.id,
         source: e.source,
         target: e.target,
-        label: `${RELATION_LABELS[e.relation] ?? e.relation} · ${STATUS_LABELS[e.status].toLowerCase()}`,
+        label: `${RELATION_LABELS[e.relation] ?? e.relation} · ${STATUS_LABELS[
+          e.status
+        ].toLowerCase()}`,
         markerEnd: { type: MarkerType.ArrowClosed, color: s.stroke },
         style: { stroke: s.stroke, strokeWidth: 2, strokeDasharray: s.dash },
-        labelStyle: { fontSize: 11, fill: "#241E1A" },
+        labelStyle: { fontSize: 12, fill: "#241E1A", fontWeight: 500 },
         labelBgStyle: { fill: "#F6EEDC" },
       };
     });
@@ -231,7 +290,7 @@ export default function MapView({ id }: { id: string }) {
       setNotice(
         r.created === 0
           ? "Nenhuma ligação nova encontrada nas evidências disponíveis."
-          : `${r.created} ligação(ões) sugerida(s). Revise cada uma antes de confirmar.`,
+          : `${r.created} ligação(ões) sugerida(s). Revise cada uma antes de confirmar.`
       );
       setReloadKey((k) => k + 1);
     } catch (err) {
@@ -250,7 +309,7 @@ export default function MapView({ id }: { id: string }) {
       setNotice(
         r.created === 0
           ? "Nenhuma nova lacuna identificada para os conceitos atuais."
-          : `${r.created} lacuna(s) identificada(s) após buscas externas nas bases.`,
+          : `${r.created} lacuna(s) identificada(s) após buscas externas nas bases.`
       );
       setReloadKey((k) => k + 1);
     } catch (err) {
@@ -263,183 +322,245 @@ export default function MapView({ id }: { id: string }) {
   const empty = data !== null && data.nodes.length === 0;
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-8">
-      <header className="flex flex-wrap items-baseline justify-between gap-4">
-        <h1 className="font-serif-academic text-3xl">Mapa de conhecimento</h1>
-        <div className="flex items-center gap-4 text-sm">
-          <Link href={`/projetos/${id}/arvore`} className="text-available underline">
-            Abrir árvore de progresso
-          </Link>
-          <Link href={`/projetos/${id}/editor`} className="text-available underline">
-            Abrir editor
-          </Link>
-          <Link href="/projetos" className="text-ink/70 underline">
-            Voltar aos projetos
-          </Link>
+    <div className="min-h-screen flex flex-col bg-paper text-ink">
+      <AppHeader projectId={id} />
+
+      <main className="mx-auto w-full max-w-[1440px] flex-1 px-6 py-8 sm:px-10 space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-5">
+          <div>
+            <h1 className="font-display text-3xl sm:text-[36px] text-ink">Mapa de conhecimento</h1>
+            <p className="mt-1 text-[15px] text-locked">
+              Conceitos extraídos da bibliografia e ligações apoiadas em trechos literais verificados.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="button" variant="secondary" onClick={onDetectGaps} disabled={busy}>
+              {busy ? "Buscando…" : "Buscar lacunas"}
+            </Button>
+            <Button type="button" variant="primary" onClick={onSuggest} disabled={busy}>
+              {busy ? "Analisando…" : "Sugerir ligações"}
+            </Button>
+          </div>
         </div>
-      </header>
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-danger">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="mt-4 text-sm font-medium">
-          {notice}
-        </p>
-      )}
-      {data === null && !error && <p className="mt-6 text-sm">Carregando…</p>}
-      {empty && (
-        <p className="mt-6 text-sm text-ink/70">
-          Ainda não há conceitos neste projeto. Envie PDFs para a biblioteca ou busque artigos por DOI para gerar o mapa.
-        </p>
-      )}
+        {error && <AlertBanner variant="error">{error}</AlertBanner>}
+        {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
 
-      {data && !empty && (
-        <>
-          <section aria-label="Filtros e Ações" className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-            {(Object.keys(STATUS_LABELS) as Status[]).map((s) => (
-              <label key={s} className="flex items-center gap-2">
+        {data === null && !error && (
+          <p className="py-8 text-[15px] text-locked">Carregando mapa de conhecimento…</p>
+        )}
+
+        {empty && (
+          <div className="rounded-[16px] border border-borda bg-superficie p-8 text-[15px] text-locked">
+            Ainda não há conceitos neste projeto. Envie PDFs para a biblioteca ou busque artigos por DOI para gerar o mapa.
+          </div>
+        )}
+
+        {data && !empty && (
+          <>
+            {/* Barra de Filtros */}
+            <section
+              aria-label="Filtros do mapa"
+              className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-[12px] border border-borda bg-superficie px-5 py-3 text-[15px]"
+            >
+              <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                Exibir no grafo:
+              </span>
+              {(Object.keys(STATUS_LABELS) as Status[]).map((s) => (
+                <label
+                  key={s}
+                  className="flex min-h-[44px] items-center gap-2 font-medium text-ink cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={shown[s]}
+                    onChange={(e) => setShown({ ...shown, [s]: e.target.checked })}
+                    className="h-4 w-4 accent-purple"
+                  />
+                  <span>{STATUS_LABELS[s]}</span>
+                </label>
+              ))}
+              <label className="flex min-h-[44px] items-center gap-2 font-medium text-ink cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={shown[s]}
-                  onChange={(e) => setShown({ ...shown, [s]: e.target.checked })}
+                  checked={showLowConfidence}
+                  onChange={(e) => setShowLowConfidence(e.target.checked)}
+                  className="h-4 w-4 accent-purple"
                 />
-                {STATUS_LABELS[s]}
+                <span>
+                  Baixa confiança{hiddenLowConfidence > 0 ? ` (${hiddenLowConfidence} ocultas)` : ""}
+                </span>
               </label>
-            ))}
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={showLowConfidence} onChange={(e) => setShowLowConfidence(e.target.checked)} />
-              Baixa confiança{hiddenLowConfidence > 0 ? ` (${hiddenLowConfidence} ocultas)` : ""}
-            </label>
-            <label className="flex items-center gap-2 text-gap font-medium">
-              <input type="checkbox" checked={showGaps} onChange={(e) => setShowGaps(e.target.checked)} />
-              Lacunas ({visibleGaps.length})
-            </label>
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={onDetectGaps}
-                disabled={busy}
-                className="rounded border border-gap bg-white px-3 py-2 font-medium text-gap disabled:opacity-60"
-              >
-                {busy ? "Buscando…" : "Buscar lacunas"}
-              </button>
-              <button
-                onClick={onSuggest}
-                disabled={busy}
-                className="rounded bg-available px-3 py-2 font-medium text-white disabled:opacity-60"
-              >
-                {busy ? "Analisando…" : "Sugerir ligações"}
-              </button>
-            </div>
-          </section>
-
-          <section aria-label="Grafo de conceitos" className="mt-4 hidden h-[30rem] rounded border border-ink/20 bg-white md:block">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              fitView
-              nodesConnectable={false}
-              onEdgeClick={(_, edge) => {
-                if (!edge.id.startsWith("edge-gap-")) {
-                  void selectLink(edge.id);
-                }
-              }}
-              onNodeClick={(_, node) => {
-                if (node.id.startsWith("gap-")) {
-                  selectGap(node.id.replace("gap-", ""));
-                }
-              }}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background />
-              <Controls showInteractive={false} />
-            </ReactFlow>
-          </section>
-
-          {/* Gaps Section */}
-          {(data.gaps ?? []).length > 0 && (
-            <section aria-label="Lacunas de pesquisa" className="mt-8">
-              <h2 className="text-lg font-medium text-gap">
-                Lacunas de pesquisa (potenciais temas de investigação)
-              </h2>
-              <ul className="mt-3 space-y-3 text-sm">
-                {(data.gaps ?? []).map((g) => (
-                  <li key={g.id} className="rounded border border-gap/30 bg-white p-4">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <p className="font-medium text-ink">
-                        {labelOf.get(g.concept_a) ?? g.concept_a} <span className="text-gap">↔</span>{" "}
-                        {labelOf.get(g.concept_b) ?? g.concept_b}
-                      </p>
-                      <span className="text-xs uppercase tracking-wide text-ink/60">
-                        {GAP_STATUS_LABELS[g.status]}
-                      </span>
-                    </div>
-                    {g.note && <p className="mt-2 text-ink/80">{g.note}</p>}
-                    <button
-                      onClick={() => selectGap(g.id)}
-                      aria-expanded={selectedGapId === g.id}
-                      className="mt-2 text-available underline"
-                    >
-                      {selectedGapId === g.id ? "Ocultar buscas feitas" : "Ver buscas externas feitas"}
-                    </button>
-                    {selectedGapId === g.id && (
-                      <GapPanel
-                        gap={g}
-                        deciding={decidingGap}
-                        onDecide={(status, note) => void decideGap(g.id, status, note)}
-                      />
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <label className="flex min-h-[44px] items-center gap-2 font-bold text-purple cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showGaps}
+                  onChange={(e) => setShowGaps(e.target.checked)}
+                  className="h-4 w-4 accent-purple"
+                />
+                <span>Lacunas ({visibleGaps.length})</span>
+              </label>
             </section>
-          )}
 
-          {/* Links Section */}
-          <section aria-label="Lista de ligações" className="mt-8">
-            <h2 className="text-lg font-medium">Ligações</h2>
-            {visibleLinks.length === 0 ? (
-              <p className="mt-2 text-sm text-ink/70">Nenhuma ligação para os filtros escolhidos.</p>
-            ) : (
-              <ul className="mt-2 space-y-2 text-sm">
-                {visibleLinks.map((e) => (
-                  <li key={e.id} className="rounded border border-ink/20 bg-white p-3">
-                    <p>
-                      <strong>{labelOf.get(e.source)}</strong> {RELATION_LABELS[e.relation] ?? e.relation}{" "}
-                      <strong>{labelOf.get(e.target)}</strong>
-                    </p>
-                    <p className="mt-1 text-ink/70">
-                      {STATUS_LABELS[e.status]}
-                      {e.confidence != null ? ` · confiança ${Math.round(e.confidence * 100)}%` : ""}
-                      {!e.display_by_default ? " · baixa confiança" : ""}
-                    </p>
-                    <button
-                      onClick={() => void selectLink(e.id)}
-                      aria-expanded={selectedId === e.id}
-                      className="mt-2 text-available underline"
-                    >
-                      Ver evidência
-                    </button>
-                    {selectedId === e.id && (
-                      <EvidencePanel
-                        link={e}
-                        evidence={evidence}
-                        error={evidenceError}
-                        deciding={deciding}
-                        onOpenPdf={onOpenPdf}
-                        onDecide={(body) => void decide(e.id, body)}
-                      />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
-    </main>
+            {/* Layout em duas colunas: Grafo + Lacunas (esquerda) e Ligações + Evidência (direita) */}
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
+              <div className="lg:col-span-7 space-y-6">
+                <section
+                  aria-label="Grafo de conceitos"
+                  className="hidden h-[500px] overflow-hidden rounded-[16px] border border-borda bg-superficie md:block"
+                >
+                  <ReactFlow
+                    nodes={nodes}
+                    edges={edges}
+                    fitView
+                    nodesConnectable={false}
+                    onEdgeClick={(_, edge) => {
+                      if (!edge.id.startsWith("edge-gap-")) {
+                        void selectLink(edge.id);
+                      }
+                    }}
+                    onNodeClick={(_, node) => {
+                      if (node.id.startsWith("gap-")) {
+                        selectGap(node.id.replace("gap-", ""));
+                      }
+                    }}
+                    proOptions={{ hideAttribution: true }}
+                  >
+                    <Background color="#D9CDB4" gap={20} />
+                    <Controls showInteractive={false} />
+                  </ReactFlow>
+                </section>
+
+                {/* Seção de Lacunas de Pesquisa */}
+                {(data.gaps ?? []).length > 0 && (
+                  <section
+                    aria-label="Lacunas de pesquisa"
+                    className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4"
+                  >
+                    <div className="flex items-center gap-2">
+                      <GapIcon className="h-5 w-5 text-purple" />
+                      <h2 className="font-display text-2xl text-ink">
+                        Lacunas de pesquisa ({(data.gaps ?? []).length})
+                      </h2>
+                    </div>
+
+                    <ul className="space-y-3 text-[15px]">
+                      {(data.gaps ?? []).map((g) => (
+                        <li
+                          key={g.id}
+                          className="rounded-[12px] border-2 border-dotted border-purple bg-paper/50 p-4 space-y-2"
+                        >
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <p className="font-bold text-ink">
+                              {labelOf.get(g.concept_a) ?? g.concept_a}{" "}
+                              <span className="text-purple">↔</span>{" "}
+                              {labelOf.get(g.concept_b) ?? g.concept_b}
+                            </p>
+                            <span className="rounded-[6px] bg-skipped-bg px-2.5 py-0.5 text-[13px] font-bold uppercase tracking-wider text-purple">
+                              {GAP_STATUS_LABELS[g.status]}
+                            </span>
+                          </div>
+                          {g.note && <p className="text-ink leading-relaxed">{g.note}</p>}
+                          <button
+                            type="button"
+                            onClick={() => selectGap(g.id)}
+                            aria-expanded={selectedGapId === g.id}
+                            className="inline-flex min-h-[44px] items-center font-bold text-purple underline cursor-pointer"
+                          >
+                            {selectedGapId === g.id
+                              ? "Ocultar buscas feitas"
+                              : "Ver buscas externas feitas"}
+                          </button>
+                          {selectedGapId === g.id && (
+                            <GapPanel
+                              gap={g}
+                              deciding={decidingGap}
+                              onDecide={(status, note) => void decideGap(g.id, status, note)}
+                            />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+              </div>
+
+              {/* Coluna lateral: Lista de Ligações e Painel de Evidência */}
+              <section
+                aria-label="Lista de ligações"
+                className="lg:col-span-5 rounded-[16px] border border-borda bg-superficie p-6 space-y-4"
+              >
+                <h2 className="font-display text-2xl text-ink">
+                  Ligações ({visibleLinks.length})
+                </h2>
+
+                {visibleLinks.length === 0 ? (
+                  <p className="text-[15px] text-locked">
+                    Nenhuma ligação para os filtros escolhidos.
+                  </p>
+                ) : (
+                  <ul className="space-y-3 text-[15px]">
+                    {visibleLinks.map((e) => (
+                      <li
+                        key={e.id}
+                        className={`rounded-[12px] border p-4 transition ${
+                          selectedId === e.id
+                            ? "border-2 border-purple bg-paper/40"
+                            : "border-borda bg-superficie"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <p className="text-[15px] leading-snug text-ink">
+                            <strong>{labelOf.get(e.source)}</strong>{" "}
+                            <span className="text-locked">
+                              {RELATION_LABELS[e.relation] ?? e.relation}
+                            </span>{" "}
+                            <strong>{labelOf.get(e.target)}</strong>
+                          </p>
+                          <EdgeStatusPill status={e.status} />
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[14px] text-locked">
+                          <span>
+                            {e.confidence != null
+                              ? `Confiança ${Math.round(e.confidence * 100)}%`
+                              : ""}
+                            {!e.display_by_default ? " · baixa confiança" : ""}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              selectedId === e.id ? setSelectedId(null) : void selectLink(e.id)
+                            }
+                            aria-expanded={selectedId === e.id}
+                            className="inline-flex min-h-[44px] items-center font-bold text-purple underline cursor-pointer"
+                          >
+                            {selectedId === e.id ? "Ocultar evidência" : "Ver evidência"}
+                          </button>
+                        </div>
+
+                        {selectedId === e.id && (
+                          <EvidencePanel
+                            link={e}
+                            evidence={evidence}
+                            error={evidenceError}
+                            deciding={deciding}
+                            onOpenPdf={onOpenPdf}
+                            onDecide={(body) => void decide(e.id, body)}
+                          />
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          </>
+        )}
+      </main>
+    </div>
   );
 }
 
@@ -453,34 +574,40 @@ function GapPanel({
   onDecide: (status: Gap["status"], note?: string) => void;
 }) {
   const [note, setNote] = useState(gap.note ?? "");
-  const btn = "rounded border border-ink/30 bg-white px-3 py-1 disabled:opacity-60 text-sm";
   return (
-    <div className="mt-3 space-y-3 border-t border-ink/20 pt-3" aria-live="polite">
+    <div className="mt-3 space-y-4 border-t border-borda pt-4 text-[15px]" aria-live="polite">
       <div className="space-y-2">
-        <p className="text-xs uppercase tracking-wide text-ink/60">Buscas externas realizadas</p>
+        <p className="text-[13px] font-bold uppercase tracking-wider text-locked">
+          Buscas externas realizadas
+        </p>
         <ul className="space-y-2">
           {gap.searches.map((s, idx) => (
-            <li key={idx} className="rounded border border-ink/10 bg-paper p-2.5 text-xs">
+            <li key={idx} className="rounded-[10px] border border-borda bg-superficie p-3.5">
               <div className="flex items-center justify-between">
-                <span className="font-semibold uppercase tracking-wider text-ink/70">
+                <span className="text-[13px] font-bold uppercase tracking-wider text-ink">
                   {s.source === "openalex" ? "OpenAlex" : "Semantic Scholar"}
                 </span>
-                <span className={s.status === "ok" ? "text-done font-medium" : "text-gap font-medium"}>
+                <span
+                  className={`text-[14px] font-bold ${
+                    s.status === "ok" ? "text-done" : "text-purple"
+                  }`}
+                >
                   {s.status === "ok" ? `${s.total ?? 0} resultado(s)` : "Falha na busca"}
                 </span>
               </div>
-              <p className="mt-1 font-mono text-ink/80">Busca: {s.query}</p>
+              <p className="mt-1 font-mono text-[14px] text-locked">Busca: {s.query}</p>
               {s.results && s.results.length > 0 && (
-                <ul className="mt-2 list-disc pl-4 space-y-1">
+                <ul className="mt-2 list-disc pl-5 space-y-1 text-[14px]">
                   {s.results.map((r, rIdx) => (
                     <li key={rIdx}>
-                      <span>{r.title}</span> {r.year && <span className="text-ink/60">({r.year})</span>}
+                      <span>{r.title}</span>{" "}
+                      {r.year && <span className="text-locked">({r.year})</span>}
                       {r.doi && (
                         <a
                           href={`https://doi.org/${r.doi}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="ml-1 text-available underline"
+                          className="ml-1.5 font-bold text-purple underline"
                         >
                           DOI
                         </a>
@@ -494,8 +621,10 @@ function GapPanel({
         </ul>
       </div>
 
-      <div className="space-y-2 border-t border-ink/10 pt-3">
-        <p className="text-xs uppercase tracking-wide text-ink/60">Decisão sobre a lacuna</p>
+      <div className="space-y-3 border-t border-borda pt-3">
+        <p className="text-[13px] font-bold uppercase tracking-wider text-locked">
+          Decisão sobre a lacuna
+        </p>
         <label className="block">
           <span className="sr-only">Anotação pessoal</span>
           <input
@@ -503,36 +632,39 @@ function GapPanel({
             onChange={(e) => setNote(e.target.value)}
             maxLength={500}
             placeholder="Anotação pessoal sobre a lacuna (opcional)"
-            className="w-full rounded border border-ink/30 bg-white px-2 py-1 text-xs"
+            className="w-full h-[46px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
           />
         </label>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           {gap.status !== "adopted_as_problem" && (
-            <button
+            <Button
+              type="button"
+              variant="secondary"
               disabled={deciding}
               onClick={() => onDecide("adopted_as_problem", note)}
-              className={`${btn} bg-done text-white border-done`}
             >
               Adotar como problema de pesquisa
-            </button>
+            </Button>
           )}
           {gap.status !== "dismissed" && (
-            <button
+            <Button
+              type="button"
+              variant="secondary"
               disabled={deciding}
               onClick={() => onDecide("dismissed", note)}
-              className={btn}
             >
               Descartar lacuna
-            </button>
+            </Button>
           )}
           {gap.status !== "open" && (
-            <button
+            <Button
+              type="button"
+              variant="secondary"
               disabled={deciding}
               onClick={() => onDecide("open", note)}
-              className={btn}
             >
               Reabrir como aberta
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -557,49 +689,67 @@ function EvidencePanel({
 }) {
   const [relation, setRelation] = useState(link.relation);
   const [note, setNote] = useState("");
-  const btn = "rounded border border-ink/30 bg-white px-3 py-1 disabled:opacity-60";
   return (
-    <div className="mt-3 space-y-3 border-t border-ink/20 pt-3" aria-live="polite">
+    <div className="mt-4 space-y-4 border-t border-borda pt-4 text-[15px]" aria-live="polite">
       {link.rationale && link.status === "suggested" && (
-        <p className="text-ink/80">Justificativa da IA (sugestão, não confirmada): {link.rationale}</p>
-      )}
-      {error && (
-        <p role="alert" className="text-danger">
-          {error}
+        <p className="text-ink leading-relaxed">
+          <strong className="text-purple">Justificativa da sugestão:</strong> {link.rationale}
         </p>
       )}
-      {evidence === null && !error && <p>Carregando evidência…</p>}
+      {error && <AlertBanner variant="error">{error}</AlertBanner>}
+      {evidence === null && !error && (
+        <p className="text-locked">Carregando evidência literal…</p>
+      )}
       {evidence?.map((ev) => (
-        <figure key={ev.side} className="rounded border border-ink/20 bg-paper p-3">
-          <figcaption className="text-xs uppercase tracking-wide text-ink/60">
+        <figure
+          key={ev.side}
+          className="rounded-[12px] border border-borda bg-paper p-4 space-y-2"
+        >
+          <figcaption className="text-[13px] font-bold uppercase tracking-wider text-locked">
             {ev.side === "source" ? "Evidência de origem" : "Evidência de destino"} · {ev.concept}
           </figcaption>
-          <blockquote className="font-serif-academic mt-2 leading-relaxed">
-            <span className="text-ink/60">{ev.context_before}</span>
-            <mark className="bg-available/20 px-0.5 text-ink">{ev.quote}</mark>
-            <span className="text-ink/60">{ev.context_after}</span>
+          <blockquote className="font-serif-academic text-[17px] leading-[1.6] text-ink">
+            <span className="text-locked">{ev.context_before} </span>
+            <mark className="mark-orange font-medium">{ev.quote}</mark>
+            <span className="text-locked"> {ev.context_after}</span>
           </blockquote>
-          <p className="mt-2 text-ink/70">
+          <p className="text-[14px] font-medium text-locked">
             {ev.document_title ?? "Documento"} · página {ev.page}
           </p>
           {ev.has_pdf ? (
-            <button onClick={() => onOpenPdf(ev.document_id, ev.page)} className="mt-1 text-available underline">
+            <button
+              type="button"
+              onClick={() => onOpenPdf(ev.document_id, ev.page)}
+              className="inline-flex min-h-[44px] items-center text-[15px] font-bold text-purple underline cursor-pointer"
+            >
               Abrir PDF na página {ev.page}
             </button>
           ) : (
-            <p className="mt-1 text-ink/60">Documento sem PDF anexado (apenas metadados).</p>
+            <p className="text-[14px] text-locked">
+              Documento sem PDF anexado (apenas metadados).
+            </p>
           )}
         </figure>
       ))}
-      <div className="space-y-3 border-t border-ink/10 pt-3">
-        <p className="text-xs uppercase tracking-wide text-ink/60">Sua decisão</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button disabled={deciding || link.status === "confirmed"} onClick={() => onDecide({ action: "confirm" })} className={btn}>
+
+      <div className="space-y-3 border-t border-borda pt-3">
+        <p className="text-[13px] font-bold uppercase tracking-wider text-locked">Sua decisão</p>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={deciding || link.status === "confirmed"}
+            onClick={() => onDecide({ action: "confirm" })}
+          >
             Confirmar
-          </button>
+          </Button>
           <label className="flex items-center gap-2">
             <span className="sr-only">Tipo de relação</span>
-            <select value={relation} onChange={(e) => setRelation(e.target.value)} className="rounded border border-ink/30 bg-white px-2 py-1">
+            <select
+              value={relation}
+              onChange={(e) => setRelation(e.target.value)}
+              className="h-[44px] rounded-[10px] border border-borda bg-superficie px-3 text-[15px] text-ink"
+            >
               {Object.entries(RELATION_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
@@ -607,16 +757,18 @@ function EvidencePanel({
               ))}
             </select>
           </label>
-          <button
+          <Button
+            type="button"
+            variant="secondary"
             disabled={deciding || relation === link.relation}
             onClick={() => onDecide({ action: "edit", relation })}
-            className={btn}
           >
             Editar tipo
-          </button>
+          </Button>
         </div>
+
         {link.status !== "rejected" && (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
             <label className="flex-1">
               <span className="sr-only">Motivo da rejeição (opcional)</span>
               <input
@@ -624,12 +776,17 @@ function EvidencePanel({
                 onChange={(e) => setNote(e.target.value)}
                 maxLength={500}
                 placeholder="Motivo da rejeição (opcional)"
-                className="w-full rounded border border-ink/30 bg-white px-2 py-1"
+                className="w-full h-[44px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
               />
             </label>
-            <button disabled={deciding} onClick={() => onDecide({ action: "reject", note: note || undefined })} className={btn}>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={deciding}
+              onClick={() => onDecide({ action: "reject", note: note || undefined })}
+            >
               Rejeitar
-            </button>
+            </Button>
           </div>
         )}
       </div>
