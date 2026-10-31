@@ -9,6 +9,7 @@ import {
   ApiError,
   api,
   Evidence,
+  fetchPdfBlobUrl,
   GAP_STATUS_LABELS,
   Gap,
   getToken,
@@ -74,6 +75,29 @@ export default function MapView({ id }: { id: string }) {
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState(false);
   const [decidingGap, setDecidingGap] = useState(false);
+  const [previewPdf, setPreviewPdf] = useState<{
+    url: string;
+    title: string;
+    page: number;
+    quote: string;
+    concept: string;
+  } | null>(null);
+
+  async function onPreviewPdf(ev: Evidence) {
+    setEvidenceError(null);
+    try {
+      const url = await fetchPdfBlobUrl(id, ev.document_id, ev.page);
+      setPreviewPdf({
+        url,
+        title: ev.document_title ?? "Documento PDF",
+        page: ev.page,
+        quote: ev.quote,
+        concept: ev.concept,
+      });
+    } catch (err) {
+      setEvidenceError(err instanceof Error ? err.message : "Não foi possível carregar o PDF.");
+    }
+  }
 
   async function selectLink(linkId: string) {
     setSelectedId(linkId);
@@ -189,24 +213,28 @@ export default function MapView({ id }: { id: string }) {
     const list = data?.nodes ?? [];
     const radius = Math.max(165, list.length * 48);
     const posMap = new Map<string, { x: number; y: number }>();
+    const activeLink = visibleLinks.find((l) => l.id === selectedId) ?? null;
 
     const conceptNodes: Node[] = list.map((n, i) => {
       const angle = (2 * Math.PI * i) / Math.max(list.length, 1);
       const pos = { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
       posMap.set(n.id, pos);
+      const isHighlighted =
+        activeLink !== null && (activeLink.source === n.id || activeLink.target === n.id);
       return {
         id: n.id,
         position: pos,
         data: { label: `${n.label} (${n.n_claims})` },
         style: {
-          border: "1.5px solid #241E1A",
+          border: isHighlighted ? "2.5px solid #4B2A7B" : "1.5px solid #241E1A",
+          boxShadow: isHighlighted ? "0 0 0 3px rgba(75, 42, 123, 0.18)" : "none",
           borderRadius: 10,
           background: "#FFFFFF",
           padding: 10,
           fontSize: 14,
-          fontWeight: 500,
+          fontWeight: isHighlighted ? 700 : 500,
           color: "#241E1A",
-          width: 180,
+          width: 185,
         },
       };
     });
@@ -261,6 +289,7 @@ export default function MapView({ id }: { id: string }) {
 
     const relationEdges: Edge[] = visibleLinks.map((e) => {
       const s = STATUS_STYLE[e.status];
+      const isSelectedEdge = e.id === selectedId;
       return {
         id: e.id,
         source: e.source,
@@ -269,8 +298,12 @@ export default function MapView({ id }: { id: string }) {
           e.status
         ].toLowerCase()}`,
         markerEnd: { type: MarkerType.ArrowClosed, color: s.stroke },
-        style: { stroke: s.stroke, strokeWidth: 2, strokeDasharray: s.dash },
-        labelStyle: { fontSize: 12, fill: "#241E1A", fontWeight: 500 },
+        style: {
+          stroke: s.stroke,
+          strokeWidth: isSelectedEdge ? 3.5 : 2,
+          strokeDasharray: s.dash,
+        },
+        labelStyle: { fontSize: 12, fill: "#241E1A", fontWeight: isSelectedEdge ? 700 : 500 },
         labelBgStyle: { fill: "#F6EEDC" },
       };
     });
@@ -279,7 +312,7 @@ export default function MapView({ id }: { id: string }) {
       nodes: [...conceptNodes, ...gapNodes],
       edges: [...relationEdges, ...gapEdges],
     };
-  }, [data, visibleLinks, visibleGaps, showGaps, labelOf]);
+  }, [data, visibleLinks, visibleGaps, showGaps, labelOf, selectedId]);
 
   async function onSuggest() {
     setBusy(true);
@@ -548,6 +581,7 @@ export default function MapView({ id }: { id: string }) {
                             error={evidenceError}
                             deciding={deciding}
                             onOpenPdf={onOpenPdf}
+                            onPreviewPdf={(ev) => void onPreviewPdf(ev)}
                             onDecide={(body) => void decide(e.id, body)}
                           />
                         )}
@@ -558,6 +592,56 @@ export default function MapView({ id }: { id: string }) {
               </section>
             </div>
           </>
+        )}
+
+        {/* Modal de Leitura Lado a Lado: Trecho Verificado × PDF Original */}
+        {previewPdf && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 sm:p-6">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Visualização lado a lado do PDF"
+              className="flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[16px] border border-borda bg-paper shadow-xl"
+            >
+              <div className="flex items-center justify-between border-b border-borda bg-superficie px-6 py-4">
+                <div>
+                  <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                    Inspeção de Fonte Original · Página {previewPdf.page}
+                  </span>
+                  <h3 className="font-display text-xl text-ink">{previewPdf.title}</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPreviewPdf(null)}
+                  className="inline-flex min-h-[44px] items-center rounded-[10px] border border-borda px-4 text-[15px] font-bold text-ink hover:bg-paper cursor-pointer"
+                >
+                  Fechar visualização
+                </button>
+              </div>
+
+              <div className="grid flex-1 grid-cols-1 lg:grid-cols-12 overflow-hidden">
+                <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-borda p-6 overflow-y-auto space-y-4 bg-paper">
+                  <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                    Trecho literal verificado ({previewPdf.concept})
+                  </span>
+                  <blockquote className="rounded-[12px] border border-borda bg-superficie p-4 font-serif-academic text-[18px] leading-[1.6] text-ink">
+                    <mark className="mark-orange font-medium">{previewPdf.quote}</mark>
+                  </blockquote>
+                  <p className="text-[14px] text-locked leading-relaxed">
+                    Este trecho foi conferido por código determinístico contra o texto extraído da página {previewPdf.page} do PDF original ao lado.
+                  </p>
+                </div>
+
+                <div className="lg:col-span-8 bg-superficie h-full">
+                  <iframe
+                    src={previewPdf.url}
+                    title={`${previewPdf.title} - página ${previewPdf.page}`}
+                    className="h-full w-full border-0"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
@@ -678,6 +762,7 @@ function EvidencePanel({
   error,
   deciding,
   onOpenPdf,
+  onPreviewPdf,
   onDecide,
 }: {
   link: MapLink;
@@ -685,6 +770,7 @@ function EvidencePanel({
   error: string | null;
   deciding: boolean;
   onOpenPdf: (documentId: string, page: number) => void;
+  onPreviewPdf: (ev: Evidence) => void;
   onDecide: (body: { action: "confirm" | "reject" | "edit"; relation?: string; note?: string }) => void;
 }) {
   const [relation, setRelation] = useState(link.relation);
@@ -717,13 +803,22 @@ function EvidencePanel({
             {ev.document_title ?? "Documento"} · página {ev.page}
           </p>
           {ev.has_pdf ? (
-            <button
-              type="button"
-              onClick={() => onOpenPdf(ev.document_id, ev.page)}
-              className="inline-flex min-h-[44px] items-center text-[15px] font-bold text-purple underline cursor-pointer"
-            >
-              Abrir PDF na página {ev.page}
-            </button>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                onClick={() => onPreviewPdf(ev)}
+                className="inline-flex min-h-[44px] items-center text-[15px] font-bold text-purple underline cursor-pointer"
+              >
+                Inspecionar PDF lado a lado (pág. {ev.page})
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenPdf(ev.document_id, ev.page)}
+                className="inline-flex min-h-[44px] items-center text-[14px] font-medium text-locked underline cursor-pointer"
+              >
+                Abrir PDF na página {ev.page}
+              </button>
+            </div>
           ) : (
             <p className="text-[14px] text-locked">
               Documento sem PDF anexado (apenas metadados).

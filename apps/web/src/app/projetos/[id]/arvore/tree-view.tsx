@@ -1,11 +1,22 @@
 "use client";
 
+import "@xyflow/react/dist/style.css";
+
+import {
+  Background,
+  Controls,
+  MarkerType,
+  ReactFlow,
+  type Edge,
+  type Node,
+} from "@xyflow/react";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   api,
   getToken,
+  NODE_STATUS_LABELS,
   ProgressNode,
   TreeData,
 } from "@/lib/api";
@@ -22,6 +33,37 @@ const STATUS_CARD_STYLE: Record<NodeStatus, string> = {
   locked: "border border-dashed border-locked/60 bg-paper text-locked",
   skipped: "border border-purple/40 bg-skipped-bg text-ink",
   needs_review: "border-2 border-dotted border-purple bg-superficie text-ink",
+};
+
+const GRAPH_NODE_STYLE: Record<
+  NodeStatus,
+  { background: string; border: string; color: string }
+> = {
+  done: {
+    background: "#FFFFFF",
+    border: "2px solid #5F6E2F",
+    color: "#241E1A",
+  },
+  available: {
+    background: "#E8761E",
+    border: "2px solid #241E1A",
+    color: "#241E1A",
+  },
+  skipped: {
+    background: "#EDE7F3",
+    border: "2px solid #4B2A7B",
+    color: "#241E1A",
+  },
+  needs_review: {
+    background: "#FFFFFF",
+    border: "2px dotted #4B2A7B",
+    color: "#241E1A",
+  },
+  locked: {
+    background: "#F6EEDC",
+    border: "1.5px dashed #6F665D",
+    color: "#6F665D",
+  },
 };
 
 export default function TreeView({ id }: { id: string }) {
@@ -80,6 +122,84 @@ export default function TreeView({ id }: { id: string }) {
   }, [tree]);
 
   const queuedNodes = useMemo(() => (tree?.nodes ?? []).filter((n) => n.queued), [tree]);
+
+  // Build ReactFlow Tech-Tree Graph (nodes positioned by phase column and vertical rank, connected by prerequisites)
+  const { flowNodes, flowEdges } = useMemo(() => {
+    if (!tree) return { flowNodes: [] as Node[], flowEdges: [] as Edge[] };
+
+    const phaseOrderMap = new Map(tree.phases.map((p, idx) => [p.key, idx]));
+    const phaseCounters = new Map<string, number>();
+
+    const fNodes: Node[] = tree.nodes.map((n) => {
+      const colIdx = phaseOrderMap.get(n.phase) ?? 0;
+      const rowIdx = phaseCounters.get(n.phase) ?? 0;
+      phaseCounters.set(n.phase, rowIdx + 1);
+
+      const isSelected = selectedKey === n.key;
+      const palette = GRAPH_NODE_STYLE[n.status];
+      const statusSymbol =
+        n.status === "done"
+          ? "✓"
+          : n.status === "available"
+          ? "●"
+          : n.status === "skipped"
+          ? "↷"
+          : n.status === "needs_review"
+          ? "!"
+          : "🔒";
+
+      return {
+        id: n.key,
+        position: { x: colIdx * 255, y: rowIdx * 130 },
+        data: {
+          label: `${statusSymbol} ${n.title} · ${NODE_STATUS_LABELS[n.status]} (${n.typical_time})`,
+        },
+        style: {
+          background: palette.background,
+          border: isSelected ? "3px solid #4B2A7B" : palette.border,
+          boxShadow: isSelected ? "0 0 0 3px rgba(75, 42, 123, 0.22)" : "none",
+          color: palette.color,
+          borderRadius: 12,
+          padding: "10px 12px",
+          fontSize: 13,
+          fontWeight: isSelected || n.status === "available" ? 700 : 600,
+          width: 215,
+          cursor: "pointer",
+          textAlign: "left" as const,
+          lineHeight: 1.35,
+        },
+      };
+    });
+
+    const fEdges: Edge[] = [];
+    tree.nodes.forEach((targetNode) => {
+      targetNode.prerequisites.forEach((sourceKey) => {
+        const sourceNode = nodeMap.get(sourceKey);
+        const isSourceDone = sourceNode?.status === "done";
+        const isSourceSkipped = sourceNode?.status === "skipped";
+        const strokeColor = isSourceDone
+          ? "#5F6E2F"
+          : isSourceSkipped
+          ? "#4B2A7B"
+          : "#6F665D";
+        const dash = isSourceDone ? undefined : isSourceSkipped ? "6 4" : "4 4";
+
+        fEdges.push({
+          id: `dep-${sourceKey}-${targetNode.key}`,
+          source: sourceKey,
+          target: targetNode.key,
+          markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor },
+          style: {
+            stroke: strokeColor,
+            strokeWidth: isSourceDone ? 2.5 : 1.75,
+            strokeDasharray: dash,
+          },
+        });
+      });
+    });
+
+    return { flowNodes: fNodes, flowEdges: fEdges };
+  }, [tree, selectedKey, nodeMap]);
 
   async function updateNode(
     nodeKey: string,
@@ -163,64 +283,108 @@ export default function TreeView({ id }: { id: string }) {
 
         {tree && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
-            {/* Colunas de Fases (8 colunas no desktop) */}
-            <section
-              aria-label="Fases do trabalho"
-              className="flex gap-4 overflow-x-auto pb-4 lg:col-span-8"
-            >
-              {tree.phases.map((phase) => {
-                const phaseNodes = tree.nodes.filter((n) => n.phase === phase.key);
-                return (
-                  <div
-                    key={phase.key}
-                    className="w-[260px] shrink-0 rounded-[14px] border border-borda bg-superficie/60 p-4 space-y-3"
-                  >
-                    <h2 className="border-b border-borda pb-2.5 font-display text-lg text-ink">
-                      {phase.label}
+            {/* Coluna Esquerda (8 colunas): Grafo Tecnológico Interativo + Colunas de Fases */}
+            <div className="lg:col-span-8 space-y-6">
+              {/* Grafo Tecnológico Interativo (React Flow) */}
+              <section
+                aria-label="Grafo da árvore tecnológica"
+                className="hidden overflow-hidden rounded-[16px] border border-borda bg-superficie md:block"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda bg-paper/50 px-5 py-3">
+                  <div>
+                    <h2 className="font-display text-lg text-ink">
+                      Grafo de dependências (Árvore tecnológica)
                     </h2>
-
-                    <div className="space-y-3">
-                      {phaseNodes.map((node) => {
-                        const isSelected = selectedKey === node.key;
-                        return (
-                          <button
-                            type="button"
-                            key={node.key}
-                            onClick={() => setSelectedKey(node.key)}
-                            className={`w-full text-left cursor-pointer rounded-[12px] p-3.5 transition ${
-                              STATUS_CARD_STYLE[node.status]
-                            } ${isSelected ? "ring-2 ring-purple ring-offset-2 ring-offset-paper" : ""}`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <h3 className="text-[15px] font-bold leading-snug text-ink">
-                                {node.title}
-                              </h3>
-                            </div>
-
-                            <div className="mt-2">
-                              <StatusBadge status={node.status} />
-                            </div>
-
-                            <p className="mt-2.5 line-clamp-2 text-[14px] leading-snug text-locked">
-                              {node.description}
-                            </p>
-
-                            <div className="mt-3 flex items-center justify-between text-[13px] text-locked">
-                              <span>{node.typical_time}</span>
-                              {node.queued && (
-                                <mark className="mark-orange text-[12px] font-bold uppercase">
-                                  Na fila
-                                </mark>
-                              )}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <p className="text-[13px] text-locked">
+                      Clique em qualquer nó para inspecionar seus pré-requisitos e critérios de desbloqueio.
+                    </p>
                   </div>
-                );
-              })}
-            </section>
+                  <div className="flex items-center gap-3 text-[13px] font-medium text-locked">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block h-2.5 w-5 rounded bg-done" /> Liberado
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block h-2.5 w-5 rounded bg-orange" /> Etapa disponível
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block h-2.5 w-5 rounded border border-dashed border-locked" /> Bloqueado
+                    </span>
+                  </div>
+                </div>
+                <div className="h-[340px] w-full">
+                  <ReactFlow
+                    nodes={flowNodes}
+                    edges={flowEdges}
+                    fitView
+                    nodesConnectable={false}
+                    onNodeClick={(_, node) => setSelectedKey(node.id)}
+                    proOptions={{ hideAttribution: true }}
+                  >
+                    <Background color="#D9CDB4" gap={20} />
+                    <Controls showInteractive={false} />
+                  </ReactFlow>
+                </div>
+              </section>
+
+              {/* Colunas de Fases detalhadas */}
+              <section
+                aria-label="Fases do trabalho"
+                className="flex gap-4 overflow-x-auto pb-4"
+              >
+                {tree.phases.map((phase) => {
+                  const phaseNodes = tree.nodes.filter((n) => n.phase === phase.key);
+                  return (
+                    <div
+                      key={phase.key}
+                      className="w-[260px] shrink-0 rounded-[14px] border border-borda bg-superficie/60 p-4 space-y-3"
+                    >
+                      <h2 className="border-b border-borda pb-2.5 font-display text-lg text-ink">
+                        {phase.label}
+                      </h2>
+
+                      <div className="space-y-3">
+                        {phaseNodes.map((node) => {
+                          const isSelected = selectedKey === node.key;
+                          return (
+                            <button
+                              type="button"
+                              key={node.key}
+                              onClick={() => setSelectedKey(node.key)}
+                              className={`w-full text-left cursor-pointer rounded-[12px] p-3.5 transition ${
+                                STATUS_CARD_STYLE[node.status]
+                              } ${isSelected ? "ring-2 ring-purple ring-offset-2 ring-offset-paper" : ""}`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <h3 className="text-[15px] font-bold leading-snug text-ink">
+                                  {node.title}
+                                </h3>
+                              </div>
+
+                              <div className="mt-2">
+                                <StatusBadge status={node.status} />
+                              </div>
+
+                              <p className="mt-2.5 line-clamp-2 text-[14px] leading-snug text-locked">
+                                {node.description}
+                              </p>
+
+                              <div className="mt-3 flex items-center justify-between text-[13px] text-locked">
+                                <span>{node.typical_time}</span>
+                                {node.queued && (
+                                  <mark className="mark-orange text-[12px] font-bold uppercase">
+                                    Na fila
+                                  </mark>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
+            </div>
 
             {/* Painel Lateral de Detalhes da Etapa (4 colunas no desktop) */}
             <aside

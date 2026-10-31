@@ -123,6 +123,17 @@ export async function openPdfAtPage(projectId: string, documentId: string, page:
   }
 }
 
+/** Fetch an authenticated PDF as an object URL for side-by-side embedded viewing. */
+export async function fetchPdfBlobUrl(projectId: string, documentId: string, page: number): Promise<string> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/projects/${projectId}/documents/${documentId}/file`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, "Não foi possível carregar o PDF.");
+  const url = URL.createObjectURL(await res.blob());
+  return `${url}#page=${page}`;
+}
+
 export const RELATION_LABELS: Record<string, string> = {
   apoia: "apoia",
   contrasta: "contrasta com",
@@ -323,4 +334,35 @@ export type SectionComment = {
   content: string;
   resolved: boolean;
   created_at: string;
+};
+
+export type ProjectClaim = {
+  id: string;
+  document_id: string;
+  document_title: string | null;
+  authors: string[];
+  year: number | null;
+  statement: string;
+  quote: string;
+  page_no: number;
+  concepts: { id: string; label: string }[];
+};
+
+export type ShareLinkResponse = {
+  token: string;
+  share_path: string;
+};
+
+export type SharedProjectData = {
+  project: Project;
+  report_payload: AdvisorReport["payload"];
+  concepts: MapNode[];
+  sections: {
+    id: string;
+    title: string;
+    position: number;
+    content: Record<string, unknown>;
+    concept_ids: string[];
+    comments: SectionComment[];
+  }[];
 };
