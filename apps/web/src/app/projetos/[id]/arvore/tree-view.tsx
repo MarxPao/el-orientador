@@ -1,35 +1,27 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   api,
   getToken,
-  NODE_STATUS_LABELS,
   ProgressNode,
   TreeData,
 } from "@/lib/api";
+import { AppHeader } from "@/components/app-header";
+import { AlertBanner, Button, StatusBadge } from "@/components/ui";
 import { GateDialog } from "./gate-dialog";
 import { SchedulePanel } from "./schedule-panel";
 
 type NodeStatus = ProgressNode["status"];
 
 const STATUS_CARD_STYLE: Record<NodeStatus, string> = {
-  done: "border-done bg-done/5 text-ink",
-  available: "border-orange bg-orange/10 shadow-sm ring-1 ring-orange/30",
-  locked: "border-dashed border-locked/60 bg-paper/60 text-ink/60",
-  skipped: "border-ink/20 bg-paper/30 text-ink/50",
-  needs_review: "border-gap border-dotted bg-gap/5 text-ink",
-};
-
-const STATUS_BADGE_STYLE: Record<NodeStatus, string> = {
-  done: "bg-done text-white",
-  available: "bg-orange text-ink",
-  locked: "bg-locked/30 text-ink/70",
-  skipped: "bg-ink/20 text-ink/70",
-  needs_review: "bg-gap text-white",
+  done: "border-2 border-done bg-superficie text-ink",
+  available: "border-2 border-orange bg-superficie text-ink",
+  locked: "border border-dashed border-locked/60 bg-paper text-locked",
+  skipped: "border border-purple/40 bg-skipped-bg text-ink",
+  needs_review: "border-2 border-dotted border-purple bg-superficie text-ink",
 };
 
 export default function TreeView({ id }: { id: string }) {
@@ -53,7 +45,6 @@ export default function TreeView({ id }: { id: string }) {
         if (!cancelled) {
           setTree(d);
           if (!selectedKey && d.nodes.length > 0) {
-            // Default selection to first available node or first node
             const firstAvail = d.nodes.find((n) => n.status === "available");
             setSelectedKey(firstAvail ? firstAvail.key : d.nodes[0].key);
           }
@@ -71,7 +62,10 @@ export default function TreeView({ id }: { id: string }) {
 
   const nodeMap = useMemo(() => new Map((tree?.nodes ?? []).map((n) => [n.key, n])), [tree]);
 
-  const selectedNode = useMemo(() => (selectedKey ? nodeMap.get(selectedKey) ?? null : null), [selectedKey, nodeMap]);
+  const selectedNode = useMemo(
+    () => (selectedKey ? nodeMap.get(selectedKey) ?? null : null),
+    [selectedKey, nodeMap]
+  );
 
   const counts = useMemo(() => {
     const list = tree?.nodes ?? [];
@@ -79,13 +73,18 @@ export default function TreeView({ id }: { id: string }) {
       done: list.filter((n) => n.status === "done").length,
       available: list.filter((n) => n.status === "available").length,
       locked: list.filter((n) => n.status === "locked").length,
+      skipped: list.filter((n) => n.status === "skipped").length,
+      needsReview: list.filter((n) => n.status === "needs_review").length,
       total: list.length,
     };
   }, [tree]);
 
   const queuedNodes = useMemo(() => (tree?.nodes ?? []).filter((n) => n.queued), [tree]);
 
-  async function updateNode(nodeKey: string, payload: { status?: NodeStatus; queued?: boolean; skipped_reason?: string }) {
+  async function updateNode(
+    nodeKey: string,
+    payload: { status?: NodeStatus; queued?: boolean; skipped_reason?: string }
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -94,9 +93,9 @@ export default function TreeView({ id }: { id: string }) {
         body: payload,
       });
       if (payload.status === "done") {
-        setNotice(`Etapa '${nodeMap.get(nodeKey)?.title}' marcada como concluída.`);
+        setNotice(`Etapa "${nodeMap.get(nodeKey)?.title}" marcada como concluída.`);
       } else if (payload.status === "skipped") {
-        setNotice(`Etapa '${nodeMap.get(nodeKey)?.title}' pulada com aviso registrado.`);
+        setNotice(`Etapa "${nodeMap.get(nodeKey)?.title}" pulada com aviso registrado.`);
       }
       setReloadKey((k) => k + 1);
     } catch (err) {
@@ -107,298 +106,319 @@ export default function TreeView({ id }: { id: string }) {
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-6 py-8">
-      {/* Header */}
-      <header className="flex flex-wrap items-baseline justify-between gap-4 border-b border-ink/10 pb-5">
-        <div>
-          <h1 className="font-serif-academic text-3xl">Árvore de Progresso</h1>
-          <p className="mt-1 text-sm text-ink/70">{tree?.template_title ?? "Plano Acadêmico"}</p>
-        </div>
-        <div className="flex items-center gap-4 text-sm">
-          <Link href={`/projetos/${id}/mapa`} className="text-available underline">
-            Abrir mapa de conhecimento
-          </Link>
-          <Link href={`/projetos/${id}/editor`} className="text-available underline">
-            Abrir editor
-          </Link>
-          <Link href="/projetos" className="text-ink/70 underline">
-            Voltar aos projetos
-          </Link>
-        </div>
-      </header>
+    <div className="min-h-screen flex flex-col bg-paper text-ink">
+      <AppHeader projectId={id} />
 
-      {/* Status Summary & Research Queue */}
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 font-medium text-done">
-            <span className="h-2 w-2 rounded-full bg-done" /> {counts.done} Concluído(s)
-          </span>
-          <span className="flex items-center gap-1.5 font-medium text-available">
-            <span className="h-2 w-2 rounded-full bg-available" /> {counts.available} Disponível(is)
-          </span>
-          <span className="flex items-center gap-1.5 text-ink/60">
-            <span className="h-2 w-2 rounded-full bg-locked/50" /> {counts.locked} Bloqueado(s)
-          </span>
+      <main className="mx-auto w-full max-w-[1440px] flex-1 px-6 py-8 sm:px-10 space-y-6">
+        {/* Cabeçalho da página */}
+        <div className="flex flex-wrap items-baseline justify-between gap-4 border-b border-borda pb-5">
+          <div>
+            <h1 className="font-display text-3xl sm:text-[36px] text-ink">Árvore de progresso</h1>
+            <p className="mt-1 text-[15px] text-locked">
+              {tree?.template_title ?? "Plano Acadêmico"}
+            </p>
+          </div>
+
+          {/* Contadores unificados de estado (Disponível usa o mesmo laranja dos cartões, texto tinta) */}
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusBadge status="done" label={`${counts.done} Concluído(s)`} />
+            <StatusBadge status="available" label={`${counts.available} Disponível(is)`} />
+            {counts.needsReview > 0 && (
+              <StatusBadge status="needs_review" label={`${counts.needsReview} Revisar`} />
+            )}
+            {counts.skipped > 0 && (
+              <StatusBadge status="skipped" label={`${counts.skipped} Pulado(s)`} />
+            )}
+            <StatusBadge status="locked" label={`${counts.locked} Bloqueado(s)`} />
+          </div>
         </div>
 
+        {/* Fila de pesquisa destacada */}
         {queuedNodes.length > 0 && (
-          <div className="flex items-center gap-2 rounded bg-available/10 px-3 py-1 font-medium text-available">
-            <span>Fila de pesquisa atual:</span>
-            <span>{queuedNodes.map((n) => n.title).join(", ")}</span>
+          <div className="flex flex-wrap items-center gap-2 rounded-[10px] border border-borda bg-superficie px-4 py-2.5 text-[15px]">
+            <span className="font-bold text-ink">Fila de pesquisa atual:</span>
+            <div className="flex flex-wrap items-center gap-2">
+              {queuedNodes.map((n) => (
+                <mark key={n.key} className="mark-orange font-medium">
+                  {n.title}
+                </mark>
+              ))}
+            </div>
           </div>
         )}
-      </div>
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-danger">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="mt-4 text-sm font-medium text-done">
-          {notice}
-        </p>
-      )}
+        {error && <AlertBanner variant="error">{error}</AlertBanner>}
+        {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
 
-      {/* Schedule & Deadline Alerts */}
-      <div className="mt-5">
+        {/* Cronograma & Prazos */}
         <SchedulePanel
           projectId={id}
           reloadKey={reloadKey}
           onSelectNode={(k) => setSelectedKey(k)}
         />
-      </div>
 
-      {tree === null && !error && <p className="mt-8 text-sm">Carregando fases e etapas do trabalho…</p>}
+        {tree === null && !error && (
+          <p className="py-8 text-[15px] text-locked">Carregando fases e etapas do trabalho…</p>
+        )}
 
-      {tree && (
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-4">
-          {/* Phase Columns (3 cols on large screen) */}
-          <section
-            aria-label="Fases do trabalho"
-            className="flex gap-4 overflow-x-auto pb-4 lg:col-span-3"
-          >
-            {tree.phases.map((phase) => {
-              const phaseNodes = tree.nodes.filter((n) => n.phase === phase.key);
-              return (
-                <div key={phase.key} className="w-56 shrink-0 rounded-lg border border-ink/10 bg-paper/40 p-3">
-                  <h2 className="border-b border-ink/10 pb-2 text-xs font-semibold uppercase tracking-wider text-ink/70">
-                    {phase.label}
-                  </h2>
-                  <div className="mt-3 space-y-2.5">
-                    {phaseNodes.map((node) => {
-                      const isSelected = selectedKey === node.key;
-                      const isLocked = node.status === "locked";
-                      return (
-                        <div
-                          key={node.key}
-                          onClick={() => setSelectedKey(node.key)}
-                          className={`cursor-pointer rounded border p-3 transition-all ${
-                            STATUS_CARD_STYLE[node.status]
-                          } ${isSelected ? "ring-2 ring-ink ring-offset-1" : ""} ${
-                            isLocked ? "opacity-75 hover:opacity-100" : ""
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-1.5">
-                            <h3 className="text-xs font-semibold leading-tight">{node.title}</h3>
-                            <span
-                              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                                STATUS_BADGE_STYLE[node.status]
-                              }`}
-                            >
-                              {NODE_STATUS_LABELS[node.status]}
-                            </span>
-                          </div>
-                          <p className="mt-1.5 line-clamp-2 text-[11px] text-ink/70">{node.description}</p>
-                          <div className="mt-2 flex items-center justify-between text-[10px] text-ink/60">
-                            <span>{node.typical_time}</span>
-                            {node.queued && (
-                              <span className="font-semibold text-available">Na fila</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </section>
+        {tree && (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
+            {/* Colunas de Fases (8 colunas no desktop) */}
+            <section
+              aria-label="Fases do trabalho"
+              className="flex gap-4 overflow-x-auto pb-4 lg:col-span-8"
+            >
+              {tree.phases.map((phase) => {
+                const phaseNodes = tree.nodes.filter((n) => n.phase === phase.key);
+                return (
+                  <div
+                    key={phase.key}
+                    className="w-[260px] shrink-0 rounded-[14px] border border-borda bg-superficie/60 p-4 space-y-3"
+                  >
+                    <h2 className="border-b border-borda pb-2.5 font-display text-lg text-ink">
+                      {phase.label}
+                    </h2>
 
-          {/* Side Panel (Painel lateral) */}
-          <aside
-            aria-label="Painel de detalhes do nó"
-            className="rounded-lg border border-ink/20 bg-white p-5 lg:col-span-1"
-          >
-            {selectedNode ? (
-              <div className="space-y-4">
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-ink/60">
-                      {tree.phases.find((p) => p.key === selectedNode.phase)?.label}
-                    </span>
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${
-                        STATUS_BADGE_STYLE[selectedNode.status]
-                      }`}
-                    >
-                      {NODE_STATUS_LABELS[selectedNode.status]}
-                    </span>
-                  </div>
-                  <h2 className="mt-1 font-serif-academic text-xl font-bold leading-tight">
-                    {selectedNode.title}
-                  </h2>
-                  <p className="mt-2 text-xs leading-relaxed text-ink/80">{selectedNode.description}</p>
-                </div>
-
-                {/* Prerequisites */}
-                <div className="border-t border-ink/10 pt-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/70">Requisitos</h3>
-                  {selectedNode.prerequisites.length === 0 ? (
-                    <p className="mt-1 text-xs text-ink/60">Nenhum pré-requisito (etapa inicial).</p>
-                  ) : (
-                    <ul className="mt-1.5 space-y-1 text-xs">
-                      {selectedNode.prerequisites.map((reqKey) => {
-                        const reqNode = nodeMap.get(reqKey);
+                    <div className="space-y-3">
+                      {phaseNodes.map((node) => {
+                        const isSelected = selectedKey === node.key;
                         return (
-                          <li key={reqKey} className="flex items-center justify-between text-ink/80">
-                            <span>{reqNode?.title ?? reqKey}</span>
-                            <span
-                              className={`rounded px-1.5 py-0.2 text-[10px] ${
-                                STATUS_BADGE_STYLE[reqNode?.status ?? "locked"]
-                              }`}
-                            >
-                              {NODE_STATUS_LABELS[reqNode?.status ?? "locked"]}
-                            </span>
-                          </li>
+                          <button
+                            type="button"
+                            key={node.key}
+                            onClick={() => setSelectedKey(node.key)}
+                            className={`w-full text-left cursor-pointer rounded-[12px] p-3.5 transition ${
+                              STATUS_CARD_STYLE[node.status]
+                            } ${isSelected ? "ring-2 ring-purple ring-offset-2 ring-offset-paper" : ""}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className="text-[15px] font-bold leading-snug text-ink">
+                                {node.title}
+                              </h3>
+                            </div>
+
+                            <div className="mt-2">
+                              <StatusBadge status={node.status} />
+                            </div>
+
+                            <p className="mt-2.5 line-clamp-2 text-[14px] leading-snug text-locked">
+                              {node.description}
+                            </p>
+
+                            <div className="mt-3 flex items-center justify-between text-[13px] text-locked">
+                              <span>{node.typical_time}</span>
+                              {node.queued && (
+                                <mark className="mark-orange text-[12px] font-bold uppercase">
+                                  Na fila
+                                </mark>
+                              )}
+                            </div>
+                          </button>
                         );
                       })}
-                    </ul>
-                  )}
-                </div>
-
-                {/* Typical Time & What it unlocks */}
-                <div className="border-t border-ink/10 pt-3 text-xs space-y-2">
-                  <div>
-                    <span className="font-semibold text-ink/70">Tempo típico estimado: </span>
-                    <span className="text-ink/80">{selectedNode.typical_time}</span>
-                  </div>
-                  {selectedNode.unlocks.length > 0 && (
-                    <div>
-                      <span className="font-semibold text-ink/70">O que libera: </span>
-                      <span className="text-ink/80">
-                        {selectedNode.unlocks.map((k) => nodeMap.get(k)?.title ?? k).join(", ")}
-                      </span>
                     </div>
-                  )}
-                </div>
+                  </div>
+                );
+              })}
+            </section>
 
-                {/* Gate Criteria */}
-                <div className="rounded border border-ink/15 bg-paper p-3 text-xs">
-                  <h3 className="font-semibold text-ink/80">Critério de Desbloqueio (Gate)</h3>
-                  <p className="mt-1 italic leading-relaxed text-ink/70">{selectedNode.gate_criteria}</p>
-                </div>
+            {/* Painel Lateral de Detalhes da Etapa (4 colunas no desktop) */}
+            <aside
+              aria-label="Painel de detalhes do nó"
+              className="rounded-[16px] border border-borda bg-superficie p-6 lg:col-span-4 space-y-5"
+            >
+              {selectedNode ? (
+                <div className="space-y-5">
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                        {tree.phases.find((p) => p.key === selectedNode.phase)?.label}
+                      </span>
+                      <StatusBadge status={selectedNode.status} />
+                    </div>
+                    <h2 className="mt-2 font-display text-2xl leading-snug text-ink">
+                      {selectedNode.title}
+                    </h2>
+                    <p className="mt-2 text-[15px] leading-relaxed text-ink">
+                      {selectedNode.description}
+                    </p>
+                  </div>
 
-                {/* Actions */}
-                <div className="border-t border-ink/10 pt-3 space-y-2">
-                  <label className="flex items-center gap-2 text-xs font-medium text-ink cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selectedNode.queued}
-                      disabled={busy}
-                      onChange={(e) => void updateNode(selectedNode.key, { queued: e.target.checked })}
-                    />
-                    Marcar na fila de pesquisa
-                  </label>
+                  {/* Pré-requisitos */}
+                  <div className="border-t border-borda pt-4">
+                    <h3 className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                      Requisitos
+                    </h3>
+                    {selectedNode.prerequisites.length === 0 ? (
+                      <p className="mt-1.5 text-[15px] text-locked">
+                        Nenhum pré-requisito (etapa inicial).
+                      </p>
+                    ) : (
+                      <ul className="mt-2 space-y-2 text-[15px]">
+                        {selectedNode.prerequisites.map((reqKey) => {
+                          const reqNode = nodeMap.get(reqKey);
+                          return (
+                            <li
+                              key={reqKey}
+                              className="flex items-center justify-between gap-2 text-ink"
+                            >
+                              <span>{reqNode?.title ?? reqKey}</span>
+                              <StatusBadge status={reqNode?.status ?? "locked"} />
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
 
-                  <div className="flex flex-col gap-2 pt-2">
-                    {selectedNode.status === "available" && (
-                      <>
-                        <button
+                  {/* Tempo estimado e o que libera */}
+                  <div className="border-t border-borda pt-4 text-[15px] space-y-2">
+                    <div>
+                      <span className="font-bold text-ink">Tempo típico estimado: </span>
+                      <span className="text-locked">{selectedNode.typical_time}</span>
+                    </div>
+                    {selectedNode.unlocks.length > 0 && (
+                      <div>
+                        <span className="font-bold text-ink">O que libera: </span>
+                        <span className="text-locked">
+                          {selectedNode.unlocks
+                            .map((k) => nodeMap.get(k)?.title ?? k)
+                            .join(", ")}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Critério de Desbloqueio */}
+                  <div className="rounded-[12px] border border-borda bg-paper p-4 text-[15px]">
+                    <h3 className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                      Critério de Desbloqueio
+                    </h3>
+                    <p className="mt-1.5 font-serif-academic text-[16px] italic leading-relaxed text-ink">
+                      {selectedNode.gate_criteria}
+                    </p>
+                  </div>
+
+                  {/* Ações */}
+                  <div className="border-t border-borda pt-4 space-y-3">
+                    <label className="flex min-h-[44px] items-center gap-2.5 text-[15px] font-medium text-ink cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedNode.queued}
+                        disabled={busy}
+                        onChange={(e) =>
+                          void updateNode(selectedNode.key, { queued: e.target.checked })
+                        }
+                        className="h-4 w-4 accent-purple"
+                      />
+                      <span>Marcar na fila de pesquisa</span>
+                    </label>
+
+                    <div className="flex flex-col gap-2.5 pt-1">
+                      {selectedNode.status === "available" && (
+                        <>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            disabled={busy}
+                            onClick={() => setGateNode(selectedNode)}
+                            className="w-full"
+                          >
+                            Responder ao orientador
+                          </Button>
+
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => void updateNode(selectedNode.key, { status: "done" })}
+                            className="w-full"
+                          >
+                            {busy ? "Gravando…" : "Concluir sem perguntas"}
+                          </Button>
+
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() =>
+                              void updateNode(selectedNode.key, {
+                                status: "skipped",
+                                skipped_reason: "Pulado pelo usuário com aviso consciente",
+                              })
+                            }
+                            className="w-full"
+                          >
+                            Pular etapa (com justificativa)
+                          </Button>
+                        </>
+                      )}
+
+                      {selectedNode.status === "needs_review" && (
+                        <Button
+                          type="button"
+                          variant="primary"
                           disabled={busy}
                           onClick={() => setGateNode(selectedNode)}
-                          className="w-full rounded bg-available py-2 text-xs font-medium text-white hover:bg-available/90 disabled:opacity-60"
+                          className="w-full"
                         >
-                          Passar pelo Gate Socrático
-                        </button>
-                        <button
+                          Responder ao orientador
+                        </Button>
+                      )}
+
+                      {selectedNode.status === "done" && (
+                        <Button
+                          type="button"
+                          variant="secondary"
                           disabled={busy}
-                          onClick={() => void updateNode(selectedNode.key, { status: "done" })}
-                          className="w-full rounded border border-done/40 bg-done/5 py-1.5 text-xs font-medium text-done hover:bg-done/10 disabled:opacity-60"
+                          onClick={() => void updateNode(selectedNode.key, { status: "available" })}
+                          className="w-full"
                         >
-                          {busy ? "Gravando…" : "Concluir diretamente"}
-                        </button>
-                        <button
+                          Reabrir etapa
+                        </Button>
+                      )}
+
+                      {selectedNode.status === "skipped" && (
+                        <Button
+                          type="button"
+                          variant="secondary"
                           disabled={busy}
-                          onClick={() =>
-                            void updateNode(selectedNode.key, {
-                              status: "skipped",
-                              skipped_reason: "Pulado pelo usuário com aviso consciente",
-                            })
-                          }
-                          className="w-full rounded border border-ink/20 py-1.5 text-xs text-ink/70 hover:bg-paper disabled:opacity-60"
+                          onClick={() => void updateNode(selectedNode.key, { status: "available" })}
+                          className="w-full"
                         >
-                          Pular etapa com aviso
-                        </button>
-                      </>
-                    )}
+                          Retomar etapa pulada
+                        </Button>
+                      )}
 
-                    {selectedNode.status === "needs_review" && (
-                      <button
-                        disabled={busy}
-                        onClick={() => setGateNode(selectedNode)}
-                        className="w-full rounded bg-gap py-2 text-xs font-medium text-white hover:bg-gap/90 disabled:opacity-60"
-                      >
-                        Retomar Gate Socrático
-                      </button>
-                    )}
-
-                    {selectedNode.status === "done" && (
-                      <button
-                        disabled={busy}
-                        onClick={() => void updateNode(selectedNode.key, { status: "available" })}
-                        className="w-full rounded border border-ink/30 py-1.5 text-xs text-ink disabled:opacity-60"
-                      >
-                        Reabrir etapa
-                      </button>
-                    )}
-
-                    {selectedNode.status === "skipped" && (
-                      <button
-                        disabled={busy}
-                        onClick={() => void updateNode(selectedNode.key, { status: "available" })}
-                        className="w-full rounded border border-ink/30 py-1.5 text-xs text-ink disabled:opacity-60"
-                      >
-                        Retomar etapa pulada
-                      </button>
-                    )}
-
-                    {selectedNode.status === "locked" && (
-                      <p className="text-center text-[11px] text-ink/50">
-                        Complete os pré-requisitos para liberar esta etapa.
-                      </p>
-                    )}
+                      {selectedNode.status === "locked" && (
+                        <p className="text-center text-[14px] text-locked py-2">
+                          Conclua os pré-requisitos para liberar esta etapa.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <p className="text-sm text-ink/60">Selecione uma etapa para visualizar os detalhes.</p>
-            )}
-          </aside>
-        </div>
-      )}
+              ) : (
+                <p className="text-[15px] text-locked">
+                  Selecione uma etapa para visualizar os detalhes.
+                </p>
+              )}
+            </aside>
+          </div>
+        )}
 
-      {gateNode && (
-        <GateDialog
-          projectId={id}
-          node={gateNode}
-          onClose={() => setGateNode(null)}
-          onComplete={() => {
-            setReloadKey((k) => k + 1);
-            setGateNode(null);
-          }}
-        />
-      )}
-    </main>
+        {gateNode && (
+          <GateDialog
+            projectId={id}
+            node={gateNode}
+            onClose={() => setGateNode(null)}
+            onComplete={() => {
+              setReloadKey((k) => k + 1);
+              setGateNode(null);
+            }}
+          />
+        )}
+      </main>
+    </div>
   );
 }

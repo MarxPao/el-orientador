@@ -1,26 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  api,
-  GateAttempt,
-  GateTurnResult,
-  ProgressNode,
-} from "@/lib/api";
+import React, { useEffect, useState } from "react";
+import { api, GateAttempt, GateTurnResult, ProgressNode } from "@/lib/api";
+import { AdvisorBubble, AlertBanner, Button, StudentCard } from "@/components/ui";
 
 type Message = {
   role: "user" | "assistant";
   content: string;
 };
 
-interface GateDialogProps {
+export function GateDialog({
+  projectId,
+  node,
+  onClose,
+  onComplete,
+}: {
   projectId: string;
   node: ProgressNode;
   onClose: () => void;
   onComplete: () => void;
-}
-
-export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogProps) {
+}) {
   const [history, setHistory] = useState<Message[]>([]);
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -33,7 +32,8 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
 
   useEffect(() => {
     let cancelled = false;
-    // Load existing gate attempts
+    const initialQuestion = `Qual é a sua decisão para "${node.title}" e que evidência a sustenta?`;
+
     api<{ node_key: string; attempts: GateAttempt[] }>(
       `/projects/${projectId}/tree/nodes/${node.key}/gate`
     )
@@ -48,25 +48,14 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
                 content: t.content,
               }))
             );
+            return;
           }
-        } else {
-          // Initial greeting question from advisor
-          setHistory([
-            {
-              role: "assistant",
-              content: `Olá. Vamos avaliar a etapa "${node.title}". Como você justifica a formulação e a escolha desta etapa no contexto do seu trabalho?`,
-            },
-          ]);
         }
+        setHistory([{ role: "assistant", content: initialQuestion }]);
       })
       .catch(() => {
         if (!cancelled) {
-          setHistory([
-            {
-              role: "assistant",
-              content: `Olá. Vamos avaliar a etapa "${node.title}". Como você justifica a formulação e a escolha desta etapa no contexto do seu trabalho?`,
-            },
-          ]);
+          setHistory([{ role: "assistant", content: initialQuestion }]);
         }
       });
 
@@ -79,19 +68,19 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
     e.preventDefault();
     if (!userInput.trim() || loading) return;
 
-    const messageText = userInput.trim();
+    const currentText = userInput.trim();
     setUserInput("");
     setError(null);
     setLoading(true);
 
-    const updatedHistory: Message[] = [...history, { role: "user", content: messageText }];
+    const updatedHistory: Message[] = [...history, { role: "user", content: currentText }];
     setHistory(updatedHistory);
 
     try {
       const res = await api<GateTurnResult>(`/projects/${projectId}/tree/nodes/${node.key}/gate`, {
         method: "POST",
         body: {
-          user_input: messageText,
+          user_input: currentText,
           history,
           skip: false,
         },
@@ -135,22 +124,30 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
   const isCompleted = result?.done && (result.outcome === "liberar" || result.outcome === "pular");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg border border-ink/20 bg-white shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="gate-modal-title"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-[16px] border border-borda bg-paper shadow-lg"
+      >
         {/* Modal Header */}
-        <div className="flex items-start justify-between border-b border-ink/10 p-5">
+        <div className="flex items-start justify-between border-b border-borda p-6">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-ink/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-ink/70">
-                Gate Socrático
+            <div className="flex items-center gap-3">
+              <span className="rounded-[6px] bg-skipped-bg px-2.5 py-0.5 text-[13px] font-bold uppercase tracking-wider text-purple">
+                Orientação Socrática
               </span>
-              <span className="text-xs text-ink/60">{node.typical_time}</span>
+              <span className="text-[14px] text-locked">{node.typical_time}</span>
             </div>
-            <h2 className="mt-1 font-serif-academic text-xl font-bold text-ink">{node.title}</h2>
+            <h2 id="gate-modal-title" className="mt-2 font-display text-2xl text-ink">
+              {node.title}
+            </h2>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded p-1 text-ink/50 hover:bg-paper hover:text-ink text-sm"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[10px] text-ink hover:bg-borda/40 text-lg cursor-pointer"
             aria-label="Fechar"
           >
             ✕
@@ -158,76 +155,68 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
         </div>
 
         {/* Modal Content */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {/* Gate Criteria Callout */}
-          <div className="rounded border border-available/30 bg-available/5 p-3 text-xs leading-relaxed text-ink/80">
-            <span className="font-semibold text-available">Critério avaliativo: </span>
+          <div className="rounded-[12px] border border-borda bg-superficie p-4 text-[15px] leading-relaxed text-ink">
+            <span className="font-bold text-purple">Critério da etapa: </span>
             <span>{node.gate_criteria}</span>
           </div>
 
           {/* Conversation Transcript */}
-          <div className="space-y-3 pt-2">
-            {history.map((msg, i) => (
-              <div
-                key={i}
-                className={`rounded-lg p-3 text-xs leading-relaxed ${
-                  msg.role === "assistant"
-                    ? "border border-ink/10 bg-paper/60 text-ink"
-                    : "ml-6 border border-available/20 bg-available/5 text-ink"
-                }`}
-              >
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink/50">
-                  {msg.role === "assistant" ? "Orientador Acadêmico" : "Sua Resposta"}
-                </div>
-                <p className="whitespace-pre-wrap">{msg.content}</p>
-              </div>
-            ))}
+          <div className="space-y-4 pt-1">
+            {history.map((msg, i) =>
+              msg.role === "assistant" ? (
+                <AdvisorBubble key={i} label="Orientador">
+                  {msg.content}
+                </AdvisorBubble>
+              ) : (
+                <StudentCard key={i} label="Sua resposta" className="ml-6">
+                  {msg.content}
+                </StudentCard>
+              )
+            )}
           </div>
 
-          {/* Rubric Evaluation Results */}
+          {/* Rubric Score Display (when evaluated) */}
           {result?.rubric_scores && (
-            <div className="rounded border border-done/40 bg-done/5 p-4 text-xs space-y-2">
-              <h4 className="font-semibold text-done uppercase tracking-wider text-[11px]">
-                Avaliação da Rubrica
-              </h4>
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="rounded bg-white/80 p-2 border border-done/20">
-                  <div className="text-[10px] text-ink/60 font-medium">Clareza</div>
-                  <div className="text-sm font-bold text-ink">{result.rubric_scores.clareza ?? "-"}/2</div>
+            <div className="rounded-[12px] border border-done bg-superficie p-4 text-[15px]">
+              <div className="mb-2 text-[13px] font-bold uppercase tracking-wider text-done">
+                Avaliação da Etapa ({result.outcome === "liberar" ? "Aprovado" : "Em revisão"})
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="rounded-[8px] border border-borda bg-paper p-2.5">
+                  <div className="text-[13px] font-bold uppercase text-locked">Clareza</div>
+                  <div className="text-lg font-bold text-ink">{result.rubric_scores.clareza ?? "-"}/2</div>
                 </div>
-                <div className="rounded bg-white/80 p-2 border border-done/20">
-                  <div className="text-[10px] text-ink/60 font-medium">Justificativa</div>
-                  <div className="text-sm font-bold text-ink">{result.rubric_scores.justificativa ?? "-"}/2</div>
+                <div className="rounded-[8px] border border-borda bg-paper p-2.5">
+                  <div className="text-[13px] font-bold uppercase text-locked">Justificativa</div>
+                  <div className="text-lg font-bold text-ink">{result.rubric_scores.justificativa ?? "-"}/2</div>
                 </div>
-                <div className="rounded bg-white/80 p-2 border border-done/20">
-                  <div className="text-[10px] text-ink/60 font-medium">Coerência</div>
-                  <div className="text-sm font-bold text-ink">{result.rubric_scores.coerencia ?? "-"}/2</div>
+                <div className="rounded-[8px] border border-borda bg-paper p-2.5">
+                  <div className="text-[13px] font-bold uppercase text-locked">Coerência</div>
+                  <div className="text-lg font-bold text-ink">{result.rubric_scores.coerencia ?? "-"}/2</div>
                 </div>
               </div>
               {result.guidance && (
-                <p className="mt-2 text-[11px] text-ink/80 italic">{result.guidance}</p>
+                <p className="mt-3 text-[15px] text-ink italic">{result.guidance}</p>
               )}
             </div>
           )}
 
-          {error && (
-            <p role="alert" className="text-xs text-danger">
-              {error}
-            </p>
-          )}
+          {error && <AlertBanner variant="error">{error}</AlertBanner>}
 
-          {/* Skip Warning Section */}
+          {/* Skip Warning Section (texto e registro inalterados conforme solicitado) */}
           {showSkipConfirm && !isCompleted && (
-            <div className="rounded border border-gap/40 bg-gap/5 p-4 text-xs space-y-3">
-              <h4 className="font-semibold text-gap uppercase tracking-wider text-[11px]">
+            <div className="rounded-[12px] border-2 border-dotted border-purple bg-superficie p-5 text-[15px] space-y-3">
+              <h4 className="font-bold text-purple uppercase tracking-wider text-[13px]">
                 Aviso Consciente de Pulo de Etapa
               </h4>
-              <p className="text-ink/80 leading-relaxed">
+              <p className="text-ink leading-relaxed">
                 Ao pular esta etapa, as etapas seguintes serão liberadas, mas esta ação será
                 registrada no seu relatório formal ao orientador humano como &quot;etapa pulada sem validação socrática&quot;.
               </p>
               <div>
-                <label className="block text-[11px] font-medium text-ink/70 mb-1">
+                <label className="block text-[15px] font-medium text-ink mb-1.5">
                   Motivo ou justificativa do pulo (opcional):
                 </label>
                 <input
@@ -235,22 +224,22 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
                   value={skipReason}
                   onChange={(e) => setSkipReason(e.target.value)}
                   placeholder="Ex: Alinhado diretamente com o orientador na reunião presencial."
-                  className="w-full rounded border border-ink/20 px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gap"
+                  className="w-full h-[46px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink focus:border-purple"
                 />
               </div>
-              <div className="flex items-center gap-2 pt-1">
-                <button
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                <Button
                   type="button"
+                  variant="secondary"
                   disabled={loading}
                   onClick={handleSkip}
-                  className="rounded bg-gap px-3 py-1.5 text-xs font-medium text-white hover:bg-gap/90 disabled:opacity-50"
                 >
                   {loading ? "Registrando…" : "Confirmar e Pular com Registro"}
-                </button>
+                </Button>
                 <button
                   type="button"
                   onClick={() => setShowSkipConfirm(false)}
-                  className="rounded border border-ink/20 px-3 py-1.5 text-xs text-ink/70 hover:bg-paper"
+                  className="inline-flex min-h-[44px] items-center px-3 text-[15px] font-medium text-locked hover:text-ink underline cursor-pointer"
                 >
                   Cancelar
                 </button>
@@ -260,32 +249,28 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
         </div>
 
         {/* Modal Footer */}
-        <div className="border-t border-ink/10 p-4">
+        <div className="border-t border-borda p-5 bg-superficie rounded-b-[16px]">
           {isCompleted ? (
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-done">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <span className="text-[15px] font-medium text-done">
                 {result.outcome === "liberar"
-                  ? "Etapa validada com sucesso pelo orientador!"
+                  ? "Etapa validada com sucesso pelo orientador."
                   : "Etapa pulada com registro de aviso consciente."}
               </span>
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded bg-ink px-4 py-2 text-xs font-medium text-white hover:bg-ink/90"
-              >
+              <Button type="button" variant="primary" onClick={onClose}>
                 Concluir e Retornar à Árvore
-              </button>
+              </Button>
             </div>
           ) : (
             <form onSubmit={handleSend} className="space-y-3">
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <textarea
                   rows={2}
                   value={userInput}
                   disabled={loading}
                   onChange={(e) => setUserInput(e.target.value)}
                   placeholder="Escreva sua resposta e justificativa para o orientador…"
-                  className="flex-1 resize-none rounded border border-ink/20 p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+                  className="flex-1 resize-none rounded-[10px] border border-borda bg-paper/40 p-3 text-[15px] text-ink focus:border-purple"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                       e.preventDefault();
@@ -293,24 +278,25 @@ export function GateDialog({ projectId, node, onClose, onComplete }: GateDialogP
                     }
                   }}
                 />
-                <button
+                <Button
                   type="submit"
+                  variant="primary"
                   disabled={loading || !userInput.trim()}
-                  className="rounded bg-ink px-4 py-2 text-xs font-medium text-white hover:bg-ink/90 disabled:opacity-50"
+                  className="shrink-0"
                 >
                   {loading ? "Orientando…" : "Responder"}
-                </button>
+                </Button>
               </div>
 
-              <div className="flex items-center justify-between text-[11px] text-ink/60">
-                <span>Dica: Pressione Ctrl + Enter para enviar.</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[14px] text-locked">
+                <span>Pressione Ctrl + Enter para responder.</span>
                 {!showSkipConfirm && (
                   <button
                     type="button"
                     onClick={() => setShowSkipConfirm(true)}
-                    className="text-ink/60 hover:text-gap underline"
+                    className="inline-flex min-h-[44px] items-center font-medium text-purple underline cursor-pointer"
                   >
-                    Pular etapa com aviso consciente
+                    Pular etapa (com justificativa)
                   </button>
                 )}
               </div>
