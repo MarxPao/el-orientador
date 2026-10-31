@@ -13,6 +13,7 @@ import { Logo } from "@/components/logo";
 import {
   AdvisorBubble,
   AlertBanner,
+  AuthorshipPrismBar,
   Button,
   StatusBadge,
   StudentCard,
@@ -240,6 +241,10 @@ export default function AdvisorShareView({ token }: { token: string }) {
                       </p>
                     </div>
                   </div>
+
+                  {payload.manuscript.authorship_prism && (
+                    <AuthorshipPrismBar prism={payload.manuscript.authorship_prism} />
+                  )}
 
                   {payload.progress_tree.skipped_with_warning.length > 0 && (
                     <div className="rounded-[12px] border border-purple/40 bg-skipped-bg p-4 space-y-2">

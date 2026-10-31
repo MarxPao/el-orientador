@@ -6,13 +6,16 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
   AdvisorMember,
+  AiAssistResponse,
   ApiError,
   api,
+  AuthorshipPrism,
   CoherenceWarning,
   downloadDocx,
   getToken,
   MapNode,
   Project,
+  ProjectAuthorshipResponse,
   ProjectClaim,
   Section,
   SectionComment,
@@ -22,10 +25,24 @@ import {
   AdvisorBubble,
   AlertBanner,
   AlertIcon,
+  AuthorshipPrismBar,
   Button,
   CheckIcon,
   StudentCard,
 } from "@/components/ui";
+
+type AutonomyMode = "socratic" | "polish" | "draft";
+
+const DEFAULT_PRISM: AuthorshipPrism = {
+  total_words: 0,
+  human_words: 0,
+  polished_words: 0,
+  ai_drafted_words: 0,
+  human_pct: 100,
+  polished_pct: 0,
+  ai_drafted_pct: 0,
+  requires_disclosure: false,
+};
 
 /**
  * Mapa de tradução de acentuação na interface (mantém inalterados os valores de enum da API).
@@ -73,6 +90,12 @@ export default function EditorView({ id }: { id: string }) {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [advisorEmail, setAdvisorEmail] = useState("");
   const [advisors, setAdvisors] = useState<AdvisorMember[]>([]);
+  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("socratic");
+  const [prism, setPrism] = useState<AuthorshipPrism>(DEFAULT_PRISM);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [omitDeclaration, setOmitDeclaration] = useState(false);
 
   const activeSection = useMemo(
     () => sections.find((s) => s.id === selectedSectionId) ?? null,
@@ -83,8 +106,14 @@ export default function EditorView({ id }: { id: string }) {
 
   const refreshCoherence = useCallback(async () => {
     try {
-      const data = await api<CoherenceWarning[]>(`/projects/${id}/coherence`);
-      setCoherence(data);
+      const [cohData, authData] = await Promise.all([
+        api<CoherenceWarning[]>(`/projects/${id}/coherence`),
+        api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`).catch(() => null),
+      ]);
+      setCoherence(cohData);
+      if (authData?.project) {
+        setPrism(authData.project);
+      }
     } catch {
       // Quiet
     }
@@ -138,14 +167,18 @@ export default function EditorView({ id }: { id: string }) {
       api<{ nodes: MapNode[] }>(`/projects/${id}/map`),
       api<CoherenceWarning[]>(`/projects/${id}/coherence`),
       api<ProjectClaim[]>(`/projects/${id}/claims`).catch(() => [] as ProjectClaim[]),
+      api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`).catch(() => null),
     ])
-      .then(([projData, secData, mapData, cohData, claimsData]) => {
+      .then(([projData, secData, mapData, cohData, claimsData, authData]) => {
         if (cancelled) return;
         setProject(projData);
         setSections(secData);
         setConcepts(mapData.nodes || []);
         setCoherence(cohData);
         setClaims(claimsData);
+        if (authData?.project) {
+          setPrism(authData.project);
+        }
         if (secData.length > 0 && !selectedSectionId) {
           setSelectedSectionId(secData[0].id);
         }
@@ -369,11 +402,55 @@ export default function EditorView({ id }: { id: string }) {
   async function handleExport() {
     setIsExporting(true);
     try {
-      await downloadDocx(id, `${project?.title || "trabalho"}.docx`);
+      const canOmit = !prism.requires_disclosure && omitDeclaration;
+      await downloadDocx(id, `${project?.title || "trabalho"}.docx`, canOmit);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao exportar DOCX.");
     } finally {
       setIsExporting(false);
+    }
+  }
+
+  async function handleRunAiAssist(mode: "polish" | "draft") {
+    if (!activeSection) return;
+    setAiBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      let selectedText = "";
+      if (editor) {
+        const { from, to } = editor.state.selection;
+        selectedText = editor.state.doc.textBetween(from, to, " ").trim();
+      }
+      const res = await api<AiAssistResponse>(
+        `/projects/${id}/sections/${activeSection.id}/ai-assist`,
+        {
+          method: "POST",
+          body: {
+            mode,
+            selected_text: selectedText || undefined,
+            instruction: aiInstruction.trim() || undefined,
+          },
+        }
+      );
+      setSections((prev) =>
+        prev.map((s) => (s.id === res.section.id ? res.section : s))
+      );
+      if (editor && res.section.content) {
+        editor.commands.setContent(res.section.content, { emitUpdate: false });
+      }
+      setPrism(res.project_authorship);
+      setAiInstruction("");
+      setNotice(
+        mode === "polish"
+          ? "Trecho lapidado em norma culta acadêmica (registrado na faixa de revisão leve do Prisma)."
+          : "Parágrafo redigido com base nos trechos literais verificados (declaração de IA ativada automaticamente no Prisma)."
+      );
+      void refreshCoherence();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao executar assistência de IA.");
+    } finally {
+      setAiBusy(false);
     }
   }
 
@@ -418,6 +495,100 @@ export default function EditorView({ id }: { id: string }) {
         </div>
 
         {error && <AlertBanner variant="error">{error}</AlertBanner>}
+        {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
+
+        {/* Seletor de Modo de Autonomia (estilo Antigravity) + Prisma de Autoria */}
+        <section
+          aria-label="Modo de autonomia da IA e Prisma de Autoria"
+          className="grid grid-cols-1 gap-4 lg:grid-cols-12 items-stretch"
+        >
+          {/* Seletor de Modo de Autonomia (7 cols) */}
+          <div className="lg:col-span-7 rounded-[12px] border border-borda bg-superficie p-4 flex flex-col justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                Modo de atuação da IA no editor (escolha o nível de intervenção)
+              </span>
+              {!prism.requires_disclosure && (
+                <label className="flex items-center gap-2 text-[13px] font-medium text-ink cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={omitDeclaration}
+                    onChange={(e) => setOmitDeclaration(e.target.checked)}
+                    className="h-4 w-4 accent-purple"
+                  />
+                  <span>Omitir anexo de IA no DOCX (texto 100% autoral)</span>
+                </label>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setAutonomyMode("socratic")}
+                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
+                  autonomyMode === "socratic"
+                    ? "border-2 border-done bg-paper/70"
+                    : "border-borda bg-superficie hover:bg-paper/40"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[14px] font-bold text-ink">1. Socrático</span>
+                  <span className="rounded bg-done px-1.5 py-0.5 text-[11px] font-bold uppercase text-paper">
+                    Isento
+                  </span>
+                </div>
+                <p className="mt-1 text-[13px] leading-snug text-locked">
+                  A IA só pergunta e verifica citações. Você escreve 100%.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAutonomyMode("polish")}
+                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
+                  autonomyMode === "polish"
+                    ? "border-2 border-purple bg-skipped-bg/60"
+                    : "border-borda bg-superficie hover:bg-paper/40"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[14px] font-bold text-ink">2. Copiloto Leve</span>
+                  <span className="rounded bg-purple px-1.5 py-0.5 text-[11px] font-bold uppercase text-paper">
+                    Revisão
+                  </span>
+                </div>
+                <p className="mt-1 text-[13px] leading-snug text-locked">
+                  Lapida gramática e estilo do que você escreveu, sem criar texto.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAutonomyMode("draft")}
+                className={`rounded-[10px] border p-3 text-left transition cursor-pointer ${
+                  autonomyMode === "draft"
+                    ? "border-2 border-ink bg-orange/20"
+                    : "border-borda bg-superficie hover:bg-paper/40"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[14px] font-bold text-ink">3. Redator Guiado</span>
+                  <span className="rounded bg-orange px-1.5 py-0.5 text-[11px] font-bold uppercase text-ink">
+                    Declara
+                  </span>
+                </div>
+                <p className="mt-1 text-[13px] leading-snug text-locked">
+                  A IA redige parágrafo usando só seus trechos verificados.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          {/* Prisma de Autoria em Tempo Real (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col justify-center">
+            <AuthorshipPrismBar prism={prism} />
+          </div>
+        </section>
 
         {/* Layout de 3 colunas */}
         <div className="grid flex-1 grid-cols-1 gap-6 lg:grid-cols-12 items-start">
@@ -610,6 +781,51 @@ export default function EditorView({ id }: { id: string }) {
                 </span>
               </div>
             </div>
+
+            {/* Barra de Execução dos Modos 2 (Lapidação) e 3 (Redação Guiada por Evidências) */}
+            {autonomyMode !== "socratic" && activeSection && (
+              <div
+                className={`border-b border-borda px-4 py-3 space-y-2.5 ${
+                  autonomyMode === "polish" ? "bg-skipped-bg/50" : "bg-paper"
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
+                    {autonomyMode === "polish"
+                      ? "Modo 2 · Copiloto de Lapidação (revisa seu texto sem exigir nota de geração por IA)"
+                      : "Modo 3 · Redator Guiado por Evidências (redige a partir dos trechos verificados e registra no Prisma)"}
+                  </span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                  <input
+                    type="text"
+                    value={aiInstruction}
+                    onChange={(e) => setAiInstruction(e.target.value)}
+                    placeholder={
+                      autonomyMode === "polish"
+                        ? "Orientação opcional (ex.: mais conciso, formalizar conectivos)…"
+                        : "Foco do parágrafo (ex.: relacionar aprendizagem significativa à motivação)…"
+                    }
+                    className="flex-1 h-[42px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={aiBusy}
+                    onClick={() =>
+                      void handleRunAiAssist(autonomyMode === "polish" ? "polish" : "draft")
+                    }
+                  >
+                    {aiBusy
+                      ? "Processando…"
+                      : autonomyMode === "polish"
+                      ? "Lapidar texto da seção"
+                      : "Redigir parágrafo com fontes"}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {/* Gaveta de Inserção de @Citação Verificada */}
             {showCitePicker && (

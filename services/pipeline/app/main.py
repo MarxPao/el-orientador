@@ -35,9 +35,16 @@ from .tree import initial_nodes, load_template, merge_template_with_nodes, resol
 from .gate import run_gate_turn
 from .pipeline.llm import LLMClient
 from .schedule import calculate_schedule
-from .coherence import check_coherence
+from .coherence import check_coherence, extract_plain_text
 from .export_docx import build_docx_manuscript
 from .reports import generate_advisor_report_payload
+from .authorship import (
+    compute_project_authorship,
+    compute_section_authorship,
+    count_words,
+    draft_evidence_paragraph,
+    polish_academic_text,
+)
 
 
 class WorkType(str, Enum):
@@ -160,6 +167,12 @@ class SharedCommentIn(BaseModel):
     author_email: EmailStr
     content: str = Field(min_length=1, max_length=5000)
     anchor_quote: str | None = Field(default=None, max_length=500)
+
+
+class AiAssistIn(BaseModel):
+    mode: Literal["polish", "draft"]
+    selected_text: str | None = Field(default=None, max_length=5000)
+    instruction: str | None = Field(default=None, max_length=500)
 
 
 def create_app(
@@ -750,6 +763,10 @@ def create_app(
     ):
         """Update section title, position, parent, content, or linked concepts."""
         owned_project(user, project_id)
+        existing_sec = repo.get_section(project_id, section_id)
+        if not existing_sec:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Seção não encontrada.")
+
         fields = {}
         if body.title is not None:
             fields["title"] = body.title
@@ -758,7 +775,15 @@ def create_app(
         if body.position is not None:
             fields["position"] = body.position
         if body.content is not None:
-            fields["content"] = body.content
+            new_content = dict(body.content)
+            old_content = existing_sec.get("content")
+            if (
+                "_authorship" not in new_content
+                and isinstance(old_content, dict)
+                and "_authorship" in old_content
+            ):
+                new_content["_authorship"] = old_content["_authorship"]
+            fields["content"] = new_content
 
         sec = repo.update_section(project_id, section_id, **fields)
         if not sec:
@@ -768,6 +793,128 @@ def create_app(
             repo.set_section_concepts(section_id, body.concept_ids)
             sec["concept_ids"] = body.concept_ids
         return sec
+
+    @app.get("/projects/{project_id}/authorship")
+    def get_project_authorship(project_id: str, user: dict = Depends(current_user)):
+        """Return live Authorship Prism metrics across the project and per section."""
+        accessible_project(user, project_id)
+        sections = repo.list_sections(project_id)
+        return {
+            "project": compute_project_authorship(sections),
+            "sections": {s["id"]: compute_section_authorship(s) for s in sections},
+        }
+
+    @app.post("/projects/{project_id}/sections/{section_id}/ai-assist")
+    def post_section_ai_assist(
+        project_id: str,
+        section_id: str,
+        body: AiAssistIn,
+        user: dict = Depends(current_user),
+    ):
+        """AI Writing Assistance according to selected autonomy mode:
+        - `polish` (Mode 2): Copy-edits student-written text without adding new claims.
+        - `draft` (Mode 3): Drafts an academic paragraph strictly anchored in verified literal quotes (`quote` + `page`).
+        """
+        owned_project(user, project_id)
+        sec = repo.get_section(project_id, section_id)
+        if not sec:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Seção não encontrada.")
+
+        content_dict = dict(sec.get("content") or {"type": "doc", "content": []})
+        if not isinstance(content_dict.get("content"), list):
+            content_dict = {"type": "doc", "content": []}
+        auth_meta = dict(content_dict.get("_authorship") or {"polished_words": 0, "ai_drafted_words": 0})
+
+        if body.mode == "polish":
+            raw_text = (body.selected_text or "").strip() or extract_plain_text(content_dict).strip()
+            if not raw_text:
+                raise HTTPException(
+                    422,
+                    "Escreva um rascunho na seção antes de solicitar a lapidação acadêmica.",
+                )
+            generated_text = polish_academic_text(
+                text=raw_text,
+                section_title=sec["title"],
+                instruction=body.instruction,
+                client=client,
+            )
+            words_added = count_words(generated_text)
+            auth_meta["polished_words"] = int(auth_meta.get("polished_words", 0)) + words_added
+
+            # If the user polished the whole section or didn't pass a partial snippet, update the last paragraph
+            paragraphs = [
+                p.strip() for p in generated_text.split("\n\n") if p.strip()
+            ] or [generated_text]
+            if not (body.selected_text and body.selected_text.strip()):
+                content_dict["content"] = [
+                    {"type": "paragraph", "content": [{"type": "text", "text": p}]}
+                    for p in paragraphs
+                ]
+            else:
+                content_dict["content"] = list(content_dict["content"]) + [
+                    {"type": "paragraph", "content": [{"type": "text", "text": generated_text}]}
+                ]
+
+            content_dict["_authorship"] = auth_meta
+            updated_sec = repo.update_section(project_id, section_id, content=content_dict)
+            repo.log_ai_usage(
+                project_id,
+                "polish_text",
+                section_id,
+                getattr(client, "model", "deterministic_polish"),
+                "academic_polish_v0.1",
+            )
+        else:
+            # Mode 3: Evidence-Guided Draft (requires verified quotes!)
+            all_claims = repo.list_project_claims(project_id)
+            if not all_claims:
+                raise HTTPException(
+                    422,
+                    "Sem evidência verificada, não há redação por IA. Adicione um PDF ou artigo com citações verificadas primeiro.",
+                )
+            sec_concepts = set(sec.get("concept_ids") or [])
+            relevant_claims = [
+                c for c in all_claims if c.get("concept_id") in sec_concepts
+            ]
+            if not relevant_claims:
+                relevant_claims = all_claims[:3]
+                new_concept_ids = list(
+                    sec_concepts | {c["concept_id"] for c in relevant_claims if c.get("concept_id")}
+                )
+                repo.set_section_concepts(section_id, new_concept_ids)
+
+            docs_by_id = {d["id"]: d for d in repo.list_documents(project_id)}
+            generated_text = draft_evidence_paragraph(
+                claims=relevant_claims,
+                docs_by_id=docs_by_id,
+                section_title=sec["title"],
+                instruction=body.instruction,
+                client=client,
+            )
+            words_added = count_words(generated_text)
+            auth_meta["ai_drafted_words"] = int(auth_meta.get("ai_drafted_words", 0)) + words_added
+
+            content_dict["content"] = list(content_dict["content"]) + [
+                {"type": "paragraph", "content": [{"type": "text", "text": generated_text}]}
+            ]
+            content_dict["_authorship"] = auth_meta
+            updated_sec = repo.update_section(project_id, section_id, content=content_dict)
+            repo.log_ai_usage(
+                project_id,
+                "draft_section",
+                section_id,
+                getattr(client, "model", "evidence_synthesizer"),
+                "evidence_draft_v0.1",
+            )
+
+        all_sections = repo.list_sections(project_id)
+        return {
+            "section": updated_sec,
+            "generated_text": generated_text,
+            "mode": body.mode,
+            "section_authorship": compute_section_authorship(updated_sec),
+            "project_authorship": compute_project_authorship(all_sections),
+        }
 
     @app.delete("/projects/{project_id}/sections/{section_id}")
     def delete_section(project_id: str, section_id: str, user: dict = Depends(current_user)):
@@ -783,11 +930,20 @@ def create_app(
         return check_coherence(repo, project_id, project)
 
     @app.get("/projects/{project_id}/export/docx")
-    def export_project_docx(project_id: str, user: dict = Depends(current_user)):
-        """Export manuscript as standard ABNT Word (.docx) with mandatory AI Usage declaration."""
+    def export_project_docx(
+        project_id: str,
+        omit_declaration: bool = False,
+        user: dict = Depends(current_user),
+    ):
+        """Export manuscript as standard ABNT Word (.docx) with Authorship Prism & AI Usage declaration."""
         project = owned_project(user, project_id)
         project["owner_name"] = user.get("name") or "Autor(a)"
-        buf = build_docx_manuscript(repo, project_id, project)
+        buf = build_docx_manuscript(
+            repo,
+            project_id,
+            project,
+            omit_ai_declaration=omit_declaration,
+        )
         raw_title = project.get("title", "trabalho")[:30].strip()
         ascii_title = unicodedata.normalize("NFKD", raw_title).encode("ascii", "ignore").decode("ascii")
         clean_slug = re.sub(r"[^\w\-]+", "_", ascii_title).strip("_") or "trabalho"

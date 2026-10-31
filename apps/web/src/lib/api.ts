@@ -260,9 +260,39 @@ export type CoherenceWarning = {
   document_title?: string;
 };
 
-export async function downloadDocx(projectId: string, defaultFilename: string = "trabalho.docx"): Promise<void> {
+export type AuthorshipPrism = {
+  total_words: number;
+  human_words: number;
+  polished_words: number;
+  ai_drafted_words: number;
+  human_pct: number;
+  polished_pct: number;
+  ai_drafted_pct: number;
+  requires_disclosure: boolean;
+  status_label?: string;
+};
+
+export type ProjectAuthorshipResponse = {
+  project: AuthorshipPrism;
+  sections: Record<string, AuthorshipPrism>;
+};
+
+export type AiAssistResponse = {
+  section: Section;
+  generated_text: string;
+  mode: "polish" | "draft";
+  section_authorship: AuthorshipPrism;
+  project_authorship: AuthorshipPrism;
+};
+
+export async function downloadDocx(
+  projectId: string,
+  defaultFilename: string = "trabalho.docx",
+  omitDeclaration: boolean = false
+): Promise<void> {
   const token = getToken();
-  const res = await fetch(`${API_URL}/projects/${projectId}/export/docx`, {
+  const qs = omitDeclaration ? "?omit_declaration=true" : "";
+  const res = await fetch(`${API_URL}/projects/${projectId}/export/docx${qs}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) throw new ApiError(res.status, "Erro ao exportar documento Word.");
@@ -315,7 +345,14 @@ export type AdvisorReport = {
     manuscript: {
       sections_count: number;
       sections_with_evidence_count: number;
-      sections: { id: string; title: string; position: number; concepts_linked_count: number }[];
+      authorship_prism?: AuthorshipPrism;
+      sections: {
+        id: string;
+        title: string;
+        position: number;
+        concepts_linked_count: number;
+        authorship?: AuthorshipPrism;
+      }[];
     };
     ai_usage_audit: {
       total_ai_interactions: number;

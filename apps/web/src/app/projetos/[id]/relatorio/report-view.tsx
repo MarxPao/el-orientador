@@ -16,7 +16,7 @@ import {
   WORK_LABELS,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
-import { AlertBanner, Button, StatusBadge } from "@/components/ui";
+import { AlertBanner, AuthorshipPrismBar, Button, StatusBadge } from "@/components/ui";
 
 function formatDate(isoStr: string | null | undefined): string {
   if (!isoStr) return "-";
@@ -468,10 +468,15 @@ export default function ReportView({ id }: { id: string }) {
               {/* Seção 4: Auditoria de Governança e Uso de IA */}
               <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4">
                 <h2 className="font-display text-2xl text-ink border-b border-borda pb-3">
-                  4. Auditoria de uso de IA
+                  4. Prisma de Autoria e Auditoria de uso de IA
                 </h2>
+
+                {payload.manuscript.authorship_prism && (
+                  <AuthorshipPrismBar prism={payload.manuscript.authorship_prism} />
+                )}
+
                 <p className="text-[15px] text-ink leading-relaxed">
-                  Nenhuma afirmação entra sem citação literal verificada por código contra o PDF original, e nenhum capítulo completo é redigido pela IA.
+                  Nenhuma afirmação entra sem citação literal verificada por código contra o PDF original, e todo auxílio textual da IA é rastreado no Prisma de Autoria.
                 </p>
 
                 <div className="rounded-[12px] border border-borda overflow-x-auto">

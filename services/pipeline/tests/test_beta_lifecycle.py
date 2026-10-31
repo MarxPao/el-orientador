@@ -49,6 +49,7 @@ def fake_fetcher(url: str) -> dict:
 def client(tmp_path: Path):
     repo = InMemoryRepo()
     app = create_app(repo=repo, fetch_json=fake_fetcher, storage_dir=tmp_path)
+    app.state.repo = repo
     return TestClient(app)
 
 
@@ -219,3 +220,77 @@ def test_complete_beta_lifecycle(client: TestClient):
     created_comment = shared_comment_res.json()
     assert "Trecho em revisão" in created_comment["content"]
     assert "Qual recorte temporal" in created_comment["content"]
+
+    # 11. Authorship Prism & AI Writing Modes (Socratic / Polish / Evidence-Guided Draft)
+    # Seed initial paragraph on sec_id
+    client.patch(
+        f"/projects/{project_id}/sections/{sec_id}",
+        json={
+            "content": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Este trabalho investiga a evasão escolar no ensino médio brasileiro.",
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+        headers=headers,
+    )
+    auth_res = client.get(f"/projects/{project_id}/authorship", headers=headers)
+    assert auth_res.status_code == 200
+    assert auth_res.json()["project"]["requires_disclosure"] is False
+    assert auth_res.json()["project"]["human_pct"] == 100
+
+    # Mode 2 (Polish): refines student text without triggering generative AI disclosure
+    polish_res = client.post(
+        f"/projects/{project_id}/sections/{sec_id}/ai-assist",
+        json={"mode": "polish", "instruction": "Mais formal"},
+        headers=headers,
+    )
+    assert polish_res.status_code == 200
+    assert polish_res.json()["project_authorship"]["requires_disclosure"] is False
+    assert polish_res.json()["project_authorship"]["polished_words"] > 0
+
+    # Mode 3 (Draft) without verified claims is blocked by Rule 1 (422)
+    draft_blocked = client.post(
+        f"/projects/{project_id}/sections/{sec_id}/ai-assist",
+        json={"mode": "draft"},
+        headers=headers,
+    )
+    assert draft_blocked.status_code == 422
+
+    # Add a verified claim to the repo and run Mode 3 (Draft)
+    repo = client.app.state.repo
+    repo.add_claims(
+        doc_id,
+        [
+            {
+                "concept": "Metodologias ativas",
+                "statement": "As metodologias ativas reduzem a evasão discente.",
+                "quote": "A adoção de metodologias ativas eleva a retenção escolar em 28%.",
+                "page_verified": 14,
+                "quote_verified": True,
+                "verify_method": "exact",
+            }
+        ],
+        model="test",
+        prompt_version="extract_claims v0.1",
+    )
+
+    draft_ok = client.post(
+        f"/projects/{project_id}/sections/{sec_id}/ai-assist",
+        json={"mode": "draft", "instruction": "Articular com o problema da evasão"},
+        headers=headers,
+    )
+    assert draft_ok.status_code == 200
+    draft_prism = draft_ok.json()["project_authorship"]
+    assert draft_prism["requires_disclosure"] is True
+    assert draft_prism["ai_drafted_words"] > 0
+    assert "A adoção de metodologias ativas eleva a retenção escolar em 28%" in draft_ok.json()["generated_text"]

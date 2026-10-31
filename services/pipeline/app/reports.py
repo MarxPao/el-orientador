@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .authorship import compute_project_authorship, compute_section_authorship
 from .repo import Repo
 from .tree import load_template
 
@@ -122,12 +123,14 @@ def generate_advisor_report_payload(repo: Repo, project_id: str, project: dict[s
         "manuscript": {
             "sections_count": len(sections),
             "sections_with_evidence_count": len(sections_with_evidence),
+            "authorship_prism": compute_project_authorship(sections),
             "sections": [
                 {
                     "id": s["id"],
                     "title": s["title"],
                     "position": s["position"],
                     "concepts_linked_count": len(s.get("concept_ids", [])),
+                    "authorship": compute_section_authorship(s),
                 }
                 for s in sections
             ],
@@ -138,6 +141,8 @@ def generate_advisor_report_payload(repo: Repo, project_id: str, project: dict[s
                 "gate": sum(1 for l in ai_logs if l.get("action") == "gate"),
                 "extract": sum(1 for l in ai_logs if l.get("action") == "extract"),
                 "relate": sum(1 for l in ai_logs if l.get("action") == "relate"),
+                "polish_text": sum(1 for l in ai_logs if l.get("action") == "polish_text"),
+                "draft_section": sum(1 for l in ai_logs if l.get("action") == "draft_section"),
             },
             "logs": ai_logs[-20:],  # Recent audit logs
         },

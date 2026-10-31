@@ -1,5 +1,5 @@
 import React from "react";
-import { ProgressNode } from "@/lib/api";
+import { AuthorshipPrism, ProgressNode } from "@/lib/api";
 
 export type NodeStatus = ProgressNode["status"];
 
@@ -287,5 +287,96 @@ export function StatusBadge({
       <LockIcon className="h-3.5 w-3.5" />
       <span>{text}</span>
     </span>
+  );
+}
+
+/**
+ * Prisma de Autoria (Manual v2):
+ * Barra tripartida que mede a proporção entre:
+ * 1. Escrita autoral humana (oliva #5F6E2F)
+ * 2. Lapidação gramatical/estilo assistida (roxo #4B2A7B) — isenta de declaração textual na maioria das editoras
+ * 3. Redação por IA ancorada em citações verificadas (laranja #E8761E, texto tinta #241E1A) — exige declaração
+ */
+export function AuthorshipPrismBar({
+  prism,
+  title = "Prisma de autoria e exigência de declaração",
+}: {
+  prism: AuthorshipPrism;
+  title?: string;
+}) {
+  return (
+    <div
+      aria-label="Prisma de autoria"
+      className="rounded-[12px] border border-borda bg-superficie p-4 space-y-2.5"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
+          {title} ({prism.total_words} palavras)
+        </span>
+
+        {prism.requires_disclosure ? (
+          <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-orange px-2.5 py-0.5 text-[13px] font-bold text-ink">
+            <AlertIcon className="h-3.5 w-3.5 shrink-0 text-ink" />
+            <span>
+              Declaração de IA obrigatória ({prism.ai_drafted_pct}% redigido por IA)
+            </span>
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-done px-2.5 py-0.5 text-[13px] font-bold text-paper">
+            <CheckIcon className="h-3.5 w-3.5" />
+            <span>Isento de nota de geração textual (autoria humana)</span>
+          </span>
+        )}
+      </div>
+
+      {/* Barra tripartida do Prisma */}
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-paper border border-borda">
+        {prism.human_pct > 0 && (
+          <div
+            style={{ width: `${prism.human_pct}%` }}
+            className="bg-done transition-all"
+            title={`Escrita autoral do aluno: ${prism.human_pct}% (${prism.human_words} palavras)`}
+          />
+        )}
+        {prism.polished_pct > 0 && (
+          <div
+            style={{ width: `${prism.polished_pct}%` }}
+            className="bg-purple transition-all"
+            title={`Lapidação gramatical/estilo: ${prism.polished_pct}% (${prism.polished_words} palavras)`}
+          />
+        )}
+        {prism.ai_drafted_pct > 0 && (
+          <div
+            style={{ width: `${prism.ai_drafted_pct}%` }}
+            className="bg-orange transition-all"
+            title={`Redigido por IA com fontes verificadas: ${prism.ai_drafted_pct}% (${prism.ai_drafted_words} palavras)`}
+          />
+        )}
+      </div>
+
+      {/* Legenda detalhada */}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-[13px] font-medium text-ink">
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-done" />
+            <span>
+              <strong>{prism.human_pct}%</strong> Autoral ({prism.human_words} pal.)
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-purple" />
+            <span>
+              <strong>{prism.polished_pct}%</strong> Revisão leve ({prism.polished_words} pal.)
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-orange" />
+            <span>
+              <strong>{prism.ai_drafted_pct}%</strong> Redigido por IA com fontes ({prism.ai_drafted_words} pal.)
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
