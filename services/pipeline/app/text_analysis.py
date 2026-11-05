@@ -1,4 +1,4 @@
-"""Guided Text Analysis, Multi-PDF Triangulation & Dialectical Connection Engine.
+﻿"""Guided Text Analysis, Multi-PDF Triangulation & Dialectical Connection Engine.
 
 Helps the student:
 1. Dissect an uploaded PDF/article into rhetorical-scientific layers (Conceptual Definition, Empirical Evidence, Method/Scope, Caveat/Limitation) with step-by-step Socratic reading questions.
@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .coherence import extract_plain_text
+from .llm_gateway import LLMUnavailable, call_json, text_schema
 from .pipeline.llm import LLMClient
 from .pipeline.verify_quotes import verify_quote
 
@@ -363,89 +364,78 @@ def compare_and_connect_passages(
 
     student_note_clean = (student_analysis or "").strip()
 
-    # Mode A: Guided Analytical Scaffold (Intensity <= 55% — teaches the student to write the synthesis)
-    if intensity <= 55:
-        if relation_type == "contraponto":
-            scaffold = (
-                f"Embora a literatura aponte que “{quote_a}” {ref_a}, é preciso ponderar esse achado à luz de "
-                f"{concept_b.lower()}, uma vez que “{quote_b}” {ref_b}. "
-                + (
-                    f"Nessa tensão, {student_note_clean.rstrip('.')}."
-                    if student_note_clean
-                    else "[Complete aqui com sua análise: qual dos dois recortes mais se aproxima do seu objeto de pesquisa?]"
-                )
-            )
-        elif relation_type == "corroboracao":
-            scaffold = (
-                f"A premissa de que “{quote_a}” {ref_a} encontra respaldo direto quando se analisa {concept_b.lower()}, "
-                f"visto que “{quote_b}” {ref_b}. "
-                + (
-                    f"Assim, {student_note_clean.rstrip('.')}."
-                    if student_note_clean
-                    else "[Complete aqui explicando como essa convergência sustenta o objetivo do seu capítulo.]"
-                )
-            )
-        else:
-            scaffold = (
-                f"Articulando {concept_a.lower()} e {concept_b.lower()} no âmbito de {section_title}, "
-                f"parte-se da base de que “{quote_a}” {ref_a} para compreender como “{quote_b}” {ref_b}. "
-                + (
-                    f"Sob a leitura deste trabalho, {student_note_clean.rstrip('.')}."
-                    if student_note_clean
-                    else "[Complete aqui com sua conclusão analítica conectando os dois autores ao seu problema.]"
-                )
-            )
-        synthesis_text = scaffold
-        mode_used = "scaffold_socratico"
-    else:
-        # Mode B: Full Dialectical Synthesis (Intensity > 55% — weaves student's analytical note + both verified quotes)
-        if client is not None:
-            try:
-                prompt = (
-                    "Você é o orientador de síntese dialética do El Orientador.\n"
-                    f"Construa UM parágrafo comparativo acadêmico para a seção '{section_title}' na relação '{rel_label}', "
-                    "costurando obrigatoriamente as duas citações literais verificadas abaixo e a análise do aluno.\n"
-                    f"Trecho A: \"{quote_a}\" {ref_a}\n"
-                    f"Trecho B: \"{quote_b}\" {ref_b}\n"
-                    f"Análise crítica do aluno: {student_note_clean or 'Integrar os dois achados'}\n"
-                    'Responda em JSON: {"synthesis": "..."}'
-                )
-                res = client.complete_json(prompt)
-                if isinstance(res, dict) and res.get("synthesis"):
-                    synthesis_text = str(res["synthesis"]).strip()
-                    mode_used = "sintese_assistida"
-                else:
-                    raise ValueError("fallback")
-            except Exception:
-                synthesis_text = ""
-                mode_used = "sintese_assistida"
-        else:
-            synthesis_text = ""
-            mode_used = "sintese_assistida"
-
-        if not synthesis_text:
-            opening = (
-                f"A partir da análise de que {student_note_clean.rstrip('.')}, "
+    # Socratic scaffold: both verified quotes + the student's own note, or an explicit [lacuna].
+    if relation_type == "contraponto":
+        scaffold = (
+            f"Embora a literatura aponte que “{quote_a}” {ref_a}, é preciso ponderar esse achado à luz de "
+            f"{concept_b.lower()}, uma vez que “{quote_b}” {ref_b}. "
+            + (
+                f"Nessa tensão, {student_note_clean.rstrip('.')}."
                 if student_note_clean
-                else f"Ao triangular as evidências sobre {concept_a.lower()} e {concept_b.lower()} em {section_title}, "
+                else "[Complete aqui com sua análise: qual dos dois recortes mais se aproxima do seu objeto de pesquisa?]"
             )
-            if relation_type == "contraponto":
-                synthesis_text = (
-                    f"{opening}observa-se um contraponto analítico relevante: enquanto a primeira vertente sustenta que “{quote_a}” {ref_a}, "
-                    f"a segunda evidencia o limite desse escopo ao demonstrar que “{quote_b}” {ref_b}."
-                )
-            elif relation_type == "corroboracao":
-                synthesis_text = (
-                    f"{opening}constata-se forte convergência empírica e teórica, pois a proposição de que “{quote_a}” {ref_a} "
-                    f"é corroborada pela demonstração de que “{quote_b}” {ref_b}."
-                )
-            else:
-                synthesis_text = (
-                    f"{opening}estabelece-se uma conexão direta entre {concept_a.lower()} e {concept_b.lower()}: "
-                    f"partindo do fundamento de que “{quote_a}” {ref_a}, compreende-se por que “{quote_b}” {ref_b}."
-                )
+        )
+    elif relation_type == "corroboracao":
+        scaffold = (
+            f"A premissa de que “{quote_a}” {ref_a} encontra respaldo em {concept_b.lower()}, "
+            f"visto que “{quote_b}” {ref_b}. "
+            + (
+                f"Assim, {student_note_clean.rstrip('.')}."
+                if student_note_clean
+                else "[Complete aqui explicando como essa convergência sustenta o objetivo do seu capítulo.]"
+            )
+        )
+    else:
+        scaffold = (
+            f"Para articular {concept_a.lower()} e {concept_b.lower()} em {section_title}, "
+            f"parte-se de que “{quote_a}” {ref_a} para compreender por que “{quote_b}” {ref_b}. "
+            + (
+                f"Na leitura deste trabalho, {student_note_clean.rstrip('.')}."
+                if student_note_clean
+                else "[Complete aqui com sua conclusão analítica conectando os dois autores ao seu problema.]"
+            )
+        )
+
+    synthesis_text = scaffold
+    mode_used = "scaffold_socratico"
+    llm_used = False
+    notice: str | None = None
+
+    if intensity > 55:
+        # Full dialectical synthesis requires the LLM. Without it, say so and keep the scaffold.
+        try:
+            res = call_json(
+                client,
+                (
+                    "Você é o orientador de síntese dialética. Construa UM parágrafo comparativo acadêmico "
+                    "que use obrigatoriamente as duas citações literais fornecidas, entre aspas e com a "
+                    "referência exatamente como dada, e a análise do aluno. Não acrescente fontes. "
+                    "Escreva em português brasileiro acadêmico, com frases de tamanho variado e sem "
+                    "fórmulas de transição genéricas."
+                ),
+                (
+                    f"Seção: {section_title}\n"
+                    f"Relação: {rel_label}\n"
+                    f"Trecho A: “{quote_a}” {ref_a}\n"
+                    f"Trecho B: “{quote_b}” {ref_b}\n"
+                    f"Análise crítica do aluno: {student_note_clean or '(não informada)'}\n\n"
+                    'Responda em JSON: {"synthesis": "..."}'
+                ),
+                text_schema("synthesis"),
+                operation="compare_synthesis",
+            )
+            synthesis_text = str(res["synthesis"]).strip()
+            mode_used = "sintese_assistida"
+            llm_used = True
+        except LLMUnavailable:
+            notice = (
+                "A síntese completa precisa de IA, que está indisponível agora. "
+                "Entregamos o esqueleto com as duas citações para você completar."
+            )
 
     return {
+        "llm_used": llm_used,
+        "notice": notice,
         "relation_type": relation_type,
         "relation_label": rel_label,
         "intensity": intensity,
@@ -544,7 +534,7 @@ def extract_verified_passages_deterministic(
                     "scope": {},
                 }
             )
-            if len(candidates) >= 4:
+            if len(candidates) >= 15:
                 return candidates
 
     return candidates

@@ -119,3 +119,30 @@ def test_beta_metrics_endpoint(client):
     assert "socratic_gate" in data
     assert data["activation"]["threshold_sources"] == 5
     assert data["knowledge_map"]["target_acceptance_rate"] == 0.50
+
+
+def test_login_locks_after_repeated_failures_and_recovers(client, monkeypatch):
+    import app.main as m
+    m._LOGIN_FAILS.clear()
+    monkeypatch.setenv("LOGIN_MAX_FAILS", "3")
+    monkeypatch.setenv("LOGIN_LOCK_SECONDS", "60")
+    client.post("/auth/register", json={"email": "lock@exemplo.com", "password": "senha-segura-1", "name": "L"})
+    bad = {"email": "lock@exemplo.com", "password": "errada"}
+    assert [client.post("/auth/login", json=bad).status_code for _ in range(3)] == [401, 401, 401]
+    r = client.post("/auth/login", json={"email": "lock@exemplo.com", "password": "senha-segura-1"})
+    assert r.status_code == 429 and "Retry-After" in r.headers  # even the right password waits
+    assert client.post("/auth/login", json={"email": "outra@exemplo.com", "password": "x"}).status_code == 401
+    m._LOGIN_FAILS["lock@exemplo.com"] = [t - 61 for t in m._LOGIN_FAILS["lock@exemplo.com"]]
+    assert client.post("/auth/login", json={"email": "lock@exemplo.com", "password": "senha-segura-1"}).status_code == 200
+
+
+def test_successful_login_clears_the_failure_count(client, monkeypatch):
+    import app.main as m
+    m._LOGIN_FAILS.clear()
+    monkeypatch.setenv("LOGIN_MAX_FAILS", "3")
+    client.post("/auth/register", json={"email": "ok@exemplo.com", "password": "senha-segura-1", "name": "O"})
+    for _ in range(2):
+        client.post("/auth/login", json={"email": "ok@exemplo.com", "password": "errada"})
+    assert client.post("/auth/login", json={"email": "ok@exemplo.com", "password": "senha-segura-1"}).status_code == 200
+    for _ in range(2):
+        assert client.post("/auth/login", json={"email": "ok@exemplo.com", "password": "errada"}).status_code == 401

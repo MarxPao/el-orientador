@@ -58,7 +58,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   return body as T;
 }
 
-export type MapNode = { id: string; label: string; n_claims: number };
+export type MapNode = { id: string; label: string; n_claims: number; summary?: string | null };
 
 export type MapLink = {
   id: string;
@@ -283,28 +283,13 @@ export type CoherenceWarning = {
   document_title?: string;
 };
 
-export type ForensicSentence = {
-  index: number;
-  text: string;
-  word_count: number;
-  ai_probability: number;
-  classification: "human" | "hybrid" | "ai_pattern";
-  reasons: string[];
-  has_verified_citation: boolean;
-};
-
-export type ForensicAnalysis = {
-  measured_ai_score: number;
-  measured_human_pct: number;
-  measured_hybrid_pct: number;
-  measured_ai_pct: number;
-  burstiness_score: number;
-  burstiness_cv: number;
-  lexical_diversity_score: number;
-  llm_markers_found: string[];
-  verdict_code: "empty" | "human_dominant" | "hybrid" | "ai_dominant";
-  verdict_label: string;
-  sentences: ForensicSentence[];
+export type ProvenanceEventSummary = {
+  id: string | null;
+  kind: "ai_draft" | "ai_coauthor" | "ai_polish" | "ai_paraphrase" | "paste";
+  words: number;
+  source?: string | null;
+  declared?: "own_text" | null;
+  created_at?: string | null;
 };
 
 export type AuthorshipPrism = {
@@ -312,18 +297,40 @@ export type AuthorshipPrism = {
   human_words: number;
   polished_words: number;
   ai_drafted_words: number;
+  ai_revised_words?: number;
+  pasted_words?: number;
+  quoted_words?: number;
+  declared_own_words?: number;
   human_pct: number;
   polished_pct: number;
   ai_drafted_pct: number;
+  ai_revised_pct?: number;
+  pasted_pct?: number;
+  quoted_pct?: number;
+  declared_own_pct?: number;
   last_intensity?: number;
-  measured_ai_score?: number;
-  burstiness_score?: number;
-  llm_markers_found?: string[];
-  telemetry_discrepancy?: boolean;
-  discrepancy_message?: string | null;
-  forensics?: ForensicAnalysis;
   requires_disclosure: boolean;
   status_label?: string;
+  /** "ledger" = registro de proveniência; "counters" = contadores antigos (sem registro) */
+  basis?: "ledger" | "counters";
+  notes?: string[];
+  limits?: string[];
+  events?: ProvenanceEventSummary[];
+  pending_paste_events?: string[];
+};
+
+export type ParaphraseSuggestion = {
+  text: string;
+  similarity: number;
+  event_id: string;
+  ai_excerpt: string;
+};
+
+export type ParaphraseSearchResponse = {
+  available: boolean;
+  suggestions: ParaphraseSuggestion[];
+  notice: string | null;
+  limits?: string[];
 };
 
 export type ProjectAuthorshipResponse = {
@@ -334,6 +341,10 @@ export type ProjectAuthorshipResponse = {
 export type AiAssistResponse = {
   section: Section;
   generated_text: string;
+  /** false when the backend answered in an honest non-generative mode (scaffold / mechanical cleanup) */
+  llm_used: boolean;
+  /** shown to the student when AI was unavailable and a degraded mode was used */
+  notice?: string | null;
   mode: "polish" | "coauthor" | "draft";
   intensity: number;
   section_authorship: AuthorshipPrism;
@@ -342,6 +353,8 @@ export type AiAssistResponse = {
 
 export type ValidateAuthenticityResponse = {
   section_id: string;
+  synced?: boolean;
+  notice?: string | null;
   section_authorship: AuthorshipPrism;
   project_authorship: AuthorshipPrism;
 };
@@ -532,6 +545,8 @@ export type TextCompareResult = {
   relation_label: string;
   intensity: number;
   mode_used: "scaffold_socratico" | "sintese_assistida";
+  llm_used: boolean;
+  notice?: string | null;
   passage_a: {
     id: string;
     citation_ref: string;
@@ -557,4 +572,316 @@ export type TextCompareResult = {
   synthesis_text: string;
   updated_section?: Section | null;
   project_authorship: AuthorshipPrism;
+};
+
+
+// ── Reference search (CrossRef / OpenAlex) ────────────────────────────────────
+
+export type RefSearchResult = {
+  doi: string | null;
+  title: string;
+  authors: string[];
+  year: number | null;
+  journal: string | null;
+  volume: string | null;
+  issue: string | null;
+  pages: string | null;
+  publisher: string | null;
+  type: string | null;
+  url: string | null;
+  abstract: string | null;
+  source: "crossref" | "openalex";
+};
+
+/** Search CrossRef by free-text query (title, author, keyword). */
+export async function searchCrossRef(query: string, rows = 10): Promise<RefSearchResult[]> {
+  const url = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=${rows}&select=DOI,title,author,published,container-title,volume,issue,page,publisher,type,URL,abstract`;
+  const res = await fetch(url, { headers: { "User-Agent": "ElOrientador/1.0 (mailto:suporte@elorientador.app)" } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data?.message?.items ?? []).map((item: Record<string, unknown>) => ({
+    doi: (item.DOI as string) ?? null,
+    title: Array.isArray(item.title) ? (item.title as string[])[0] : (item.title as string) ?? "Sem título",
+    authors: Array.isArray(item.author)
+      ? (item.author as { given?: string; family?: string }[]).slice(0, 5).map((a) => [a.family, a.given].filter(Boolean).join(", "))
+      : [],
+    year: (item["published"] as { "date-parts"?: number[][] })?.[  "date-parts"]?.[0]?.[0] ?? null,
+    journal: Array.isArray(item["container-title"]) ? (item["container-title"] as string[])[0] : null,
+    volume: (item.volume as string) ?? null,
+    issue: (item.issue as string) ?? null,
+    pages: (item.page as string) ?? null,
+    publisher: (item.publisher as string) ?? null,
+    type: (item.type as string) ?? null,
+    url: (item.URL as string) ?? null,
+    abstract: typeof item.abstract === "string" ? (item.abstract as string).replace(/<[^>]+>/g, "").slice(0, 400) : null,
+    source: "crossref" as const,
+  }));
+}
+
+/** Fetch a single work by DOI from CrossRef. */
+export async function fetchByDoi(doi: string): Promise<RefSearchResult | null> {
+  const clean = doi.replace(/^https?:\/\/doi\.org\//i, "");
+  const url = `https://api.crossref.org/works/${encodeURIComponent(clean)}`;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "ElOrientador/1.0 (mailto:suporte@elorientador.app)" } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data?.message;
+    if (!item) return null;
+    return {
+      doi: (item.DOI as string) ?? null,
+      title: Array.isArray(item.title) ? (item.title as string[])[0] : (item.title as string) ?? "Sem título",
+      authors: Array.isArray(item.author)
+        ? (item.author as { given?: string; family?: string }[]).slice(0, 5).map((a) => [a.family, a.given].filter(Boolean).join(", "))
+        : [],
+      year: (item["published"] as { "date-parts"?: number[][] })?.[  "date-parts"]?.[0]?.[0] ?? null,
+      journal: Array.isArray(item["container-title"]) ? (item["container-title"] as string[])[0] : null,
+      volume: (item.volume as string) ?? null,
+      issue: (item.issue as string) ?? null,
+      pages: (item.page as string) ?? null,
+      publisher: (item.publisher as string) ?? null,
+      type: (item.type as string) ?? null,
+      url: (item.URL as string) ?? null,
+      abstract: typeof item.abstract === "string" ? (item.abstract as string).replace(/<[^>]+>/g, "").slice(0, 400) : null,
+      source: "crossref" as const,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Bibliography export ───────────────────────────────────────────────────────
+
+export async function downloadBibliography(
+  projectId: string,
+  format: "abnt" | "apa" | "vancouver" | "chicago" | "mla" | "bibtex" = "abnt",
+  filename = "referencias.txt"
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/projects/${projectId}/export/bibliography?format=${format}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, "Erro ao exportar bibliografia.");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ── Citation consistency check ────────────────────────────────────────────────
+
+export type CitationIssue = {
+  type: "citacao_sem_referencia" | "referencia_nao_citada" | "doi_duplicado";
+  severity: "error" | "warning";
+  message: string;
+  document_id?: string;
+  document_title?: string;
+  section_id?: string;
+  section_title?: string;
+};
+
+export type ConsistencyReport = {
+  issues: CitationIssue[];
+  total_documents: number;
+  total_sections: number;
+  cited_document_ids: string[];
+  uncited_document_ids: string[];
+  ok: boolean;
+};
+
+export async function checkConsistency(projectId: string): Promise<ConsistencyReport> {
+  return api<ConsistencyReport>(`/projects/${projectId}/consistency`);
+}
+
+// ── Document list for reference manager ──────────────────────────────────────
+
+export type Document = {
+  id: string;
+  project_id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  doi: string | null;
+  status: string;
+  /** null for a reference imported by citation or DOI (no PDF attached) */
+  storage_path?: string | null;
+  claims_count: number;
+  created_at: string;
+  /** share of pages with readable text (0..1), set once the PDF has been read */
+  parse_quality?: number | null;
+  /** pipeline stage running or queued ("parse" | "extract"), null when idle */
+  stage?: "parse" | "index" | "embed" | "extract" | "summarize" | null;
+  progress?: {
+    phase: "parse" | "ocr" | "parsed" | "indexed" | "extract" | "extracted";
+    done: number;
+    total: number;
+    ocr_pages?: number;
+    chunks?: number;
+  } | null;
+  /** AI summary of the whole document. Always labelled as AI-generated: it is not evidence. */
+  summary?: DocumentSummary | null;
+};
+
+export type DocumentSummary = {
+  overview: string;
+  sections: { page_start: number; page_end: number; summary: string }[];
+  model: string | null;
+  ai_generated: true;
+};
+
+export type SearchResult = {
+  chunk_id: string;
+  document_id: string;
+  document_title: string | null;
+  authors: string[];
+  year: number | null;
+  page_no: number;
+  snippet: string;
+  score: number;
+  /** which rankers found it: exact words ("keyword") and/or meaning ("semantic") */
+  matched_by: ("keyword" | "semantic")[];
+  /** ready-to-use in-text citation, e.g. "(Moran, 2015, p. 12)" */
+  cite: string;
+};
+
+export type SearchResponse = {
+  query: string;
+  mode: "hybrid" | "keyword";
+  notice: string | null;
+  results: SearchResult[];
+  coverage: { chunks: number; embedded: number };
+};
+
+export async function searchLibrary(projectId: string, q: string, limit = 10): Promise<SearchResponse> {
+  return api<SearchResponse>(`/projects/${projectId}/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+}
+
+/** Rebuild the passage index of every document (needed once for PDFs uploaded before search existed). */
+export async function reindexLibrary(projectId: string): Promise<{ queued: number }> {
+  return api<{ queued: number }>(`/projects/${projectId}/library/reindex`, { method: "POST" });
+}
+
+export async function listDocuments(projectId: string): Promise<Document[]> {
+  return api<Document[]>(`/projects/${projectId}/documents`);
+}
+
+export async function deleteDocument(projectId: string, documentId: string): Promise<void> {
+  await api(`/projects/${projectId}/documents/${documentId}`, { method: "DELETE" });
+}
+
+export async function importCitation(
+  projectId: string,
+  rawCitation: string,
+  citationStyle: string
+): Promise<{ id: string; title: string }> {
+  return api(`/projects/${projectId}/documents/import-citation`, {
+    method: "POST",
+    body: { raw_citation: rawCitation, citation_style: citationStyle },
+  });
+}
+
+// ── Section comments ──────────────────────────────────────────────────────────
+
+export async function listSectionComments(projectId: string, sectionId: string): Promise<SectionComment[]> {
+  return api<SectionComment[]>(`/projects/${projectId}/sections/${sectionId}/comments`);
+}
+
+export async function createSectionComment(
+  projectId: string,
+  sectionId: string,
+  content: string
+): Promise<SectionComment> {
+  return api<SectionComment>(`/projects/${projectId}/sections/${sectionId}/comments`, {
+    method: "POST",
+    body: { content },
+  });
+}
+
+export async function resolveSectionComment(
+  projectId: string,
+  sectionId: string,
+  commentId: string
+): Promise<SectionComment> {
+  return api<SectionComment>(
+    `/projects/${projectId}/sections/${sectionId}/comments/${commentId}/resolve`,
+    { method: "POST" }
+  );
+}
+
+// ── Section versions (history) ────────────────────────────────────────────────
+
+export type SectionVersion = {
+  id: string;
+  section_id: string;
+  content_snapshot: Record<string, unknown>;
+  word_count: number;
+  created_at: string;
+  created_by: string | null;
+  change_summary?: string | null;
+};
+
+export async function listSectionVersions(
+  projectId: string,
+  sectionId: string
+): Promise<SectionVersion[]> {
+  return api<SectionVersion[]>(`/projects/${projectId}/sections/${sectionId}/versions`);
+}
+
+export async function restoreSectionVersion(
+  projectId: string,
+  sectionId: string,
+  versionId: string
+): Promise<Section> {
+  return api<Section>(`/projects/${projectId}/sections/${sectionId}/versions/${versionId}/restore`, {
+    method: "POST",
+  });
+}
+
+// ── Advisor node feedback ─────────────────────────────────────────────────────
+
+export type NodeFeedback = {
+  id: string;
+  project_id: string;
+  node_key: string;
+  advisor_email: string;
+  content: string;
+  created_at: string;
+};
+
+export async function listNodeFeedback(projectId: string, nodeKey: string): Promise<NodeFeedback[]> {
+  return api<NodeFeedback[]>(`/projects/${projectId}/tree/${nodeKey}/feedback`);
+}
+
+export async function createNodeFeedback(
+  projectId: string,
+  nodeKey: string,
+  content: string
+): Promise<NodeFeedback> {
+  return api<NodeFeedback>(`/projects/${projectId}/tree/${nodeKey}/feedback`, {
+    method: "POST",
+    body: { content },
+  });
+}
+
+export type Capabilities = {
+  llm_configured: boolean;
+  llm_available: boolean;
+  llm_model: string | null;
+  features: {
+    gate_dialogue: "ai" | "unavailable";
+    map_suggest: "ai" | "unavailable";
+    claim_extraction: "ai" | "deterministic";
+    polish: "ai" | "mechanical";
+    coauthor: "ai" | "scaffold";
+    draft: "ai" | "scaffold";
+    compare_synthesis: "ai" | "scaffold";
+    authorship?: "provenance_ledger";
+    search?: "hybrid" | "keyword";
+    summaries?: "ai" | "unavailable";
+  };
 };

@@ -255,8 +255,10 @@ def test_complete_beta_lifecycle(client: TestClient):
         headers=headers,
     )
     assert polish_res.status_code == 200
+    assert polish_res.json()["llm_used"] is False
+    assert polish_res.json()["notice"]
     assert polish_res.json()["project_authorship"]["requires_disclosure"] is False
-    assert polish_res.json()["project_authorship"]["polished_words"] > 0
+    assert polish_res.json()["project_authorship"]["polished_words"] == 0  # mechanical cleanup is not AI polish
 
     # Mode 3 (Draft) without verified claims is blocked by Rule 1 (422)
     draft_blocked = client.post(
@@ -295,7 +297,7 @@ def test_complete_beta_lifecycle(client: TestClient):
     assert draft_prism["ai_drafted_words"] > 0
     assert "A adoção de metodologias ativas eleva a retenção escolar em 28%" in draft_ok.json()["generated_text"]
 
-    # 12. Continuous Gradient (intensity=70 coauthor) & Forensic AI Authenticity Validator
+    # 12. Continuous Gradient (intensity=70 coauthor) & provenance ledger
     coauthor_res = client.post(
         f"/projects/{project_id}/sections/{sec_id}/ai-assist",
         json={
@@ -315,10 +317,9 @@ def test_complete_beta_lifecycle(client: TestClient):
     )
     assert val_res.status_code == 200
     sec_auth = val_res.json()["section_authorship"]
-    assert "forensics" in sec_auth
-    assert isinstance(sec_auth["forensics"]["measured_ai_score"], int)
-    assert isinstance(sec_auth["forensics"]["burstiness_score"], int)
-    assert len(sec_auth["forensics"]["sentences"]) >= 1
+    assert "forensics" not in sec_auth and "measured_ai_score" not in sec_auth  # no style-based verdict any more
+    assert sec_auth["basis"] == "ledger" and sec_auth["ai_drafted_words"] > 0
+    assert val_res.json()["synced"] is False and "estilo" in val_res.json()["notice"]
 
     # 13. Guided Text Analysis (PDF Dissection, Socratic Prompts, Boxcar Audit & Dialectical Comparison)
     repo.add_claims(

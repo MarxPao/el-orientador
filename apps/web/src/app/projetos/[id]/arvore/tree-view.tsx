@@ -150,9 +150,9 @@ export default function TreeView({ id }: { id: string }) {
 
       return {
         id: n.key,
-        position: { x: colIdx * 255, y: rowIdx * 130 },
+        position: { x: colIdx * 260, y: rowIdx * 105 },
         data: {
-          label: `${statusSymbol} ${n.title} · ${NODE_STATUS_LABELS[n.status]} (${n.typical_time})`,
+          label: `${statusSymbol} ${n.title}`, // status is in the symbol and colour; the time is in the card below
         },
         style: {
           background: palette.background,
@@ -161,7 +161,7 @@ export default function TreeView({ id }: { id: string }) {
           color: palette.color,
           borderRadius: 12,
           padding: "10px 12px",
-          fontSize: 13,
+          fontSize: 16,
           fontWeight: isSelected || n.status === "available" ? 700 : 600,
           width: 215,
           cursor: "pointer",
@@ -311,11 +311,12 @@ export default function TreeView({ id }: { id: string }) {
                     </span>
                   </div>
                 </div>
-                <div className="h-[340px] w-full">
+                <div className="h-[380px] w-full" role="region" aria-label="Grafo de dependências entre as etapas; use as colunas abaixo para o mesmo conteúdo em lista">
                   <ReactFlow
                     nodes={flowNodes}
                     edges={flowEdges}
-                    fitView
+                    defaultViewport={{ x: 16, y: 16, zoom: 0.8 }} // readable text, starting at the first phase: pan for the rest
+                    minZoom={0.3}
                     nodesConnectable={false}
                     onNodeClick={(_, node) => setSelectedKey(node.id)}
                     proOptions={{ hideAttribution: true }}

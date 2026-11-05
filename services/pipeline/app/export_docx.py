@@ -29,6 +29,7 @@ def build_docx_manuscript(
     project_id: str,
     project: dict[str, Any],
     omit_ai_declaration: bool = False,
+    unreviewed_paraphrases: int | None = None,
 ) -> io.BytesIO:
     """Generate in-memory ABNT-compliant DOCX file with Authorship Prism & AI Usage declaration."""
     doc = Document()
@@ -83,7 +84,11 @@ def build_docx_manuscript(
     doc.add_page_break()
 
     sections = repo.list_sections(project_id)
-    prism = compute_project_authorship(sections)
+    ev: dict = {}
+    for e in repo.list_provenance_events(project_id):
+        ev.setdefault(e["section_id"], []).append(e)
+    quotes = [c.get("quote", "") for c in repo.list_project_claims(project_id)]
+    prism = compute_project_authorship(sections, verified_quotes=quotes, events_by_section=ev)
 
     # ----------------------------------------------------
     # 2. DECLARAÇÃO DE USO DE IA (RULE 5 & PRISMA DE AUTORIA)
@@ -126,6 +131,18 @@ def build_docx_manuscript(
             )
 
         doc.add_paragraph().paragraph_format.space_after = Pt(12)
+
+        # What the ledger cannot know, stated in the document itself (never hidden from the reader).
+        p_lim = doc.add_paragraph()
+        p_lim.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        lim = ("Limites deste registro: ele reflete apenas o que foi gerado pela IA ou colado dentro da plataforma "
+               "e o que o(a) autor(a) declarou. Texto escrito em outro lugar e digitado aqui não deixa rastro, e o "
+               "registro não analisa estilo.")
+        if unreviewed_paraphrases:
+            lim += (f" No momento da exportação, {unreviewed_paraphrases} trecho(s) pareciam reescrita de rascunhos de IA e "
+                    "não foram revisados pelo(a) autor(a); por isso não estão contados como revisão de IA.")
+        p_lim.add_run(lim).italic = True
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
         # Table of AI usage logs
         ai_logs = repo.list_ai_usage(project_id)

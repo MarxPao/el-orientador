@@ -41,50 +41,57 @@ def register_and_create_project(c):
     return headers, p["id"]
 
 
-def test_gate_turn_question_then_liberar():
+def test_gate_without_llm_refuses_instead_of_faking_approval():
     c, repo = make_client()
     headers, pid = register_and_create_project(c)
 
-    # 1. First turn: short input -> prompts with a socratic question
-    r1 = c.post(
+    long_answer = (
+        "Vou investigar a aplicação de redes neurais convolucionais na detecção precoce de pragas em "
+        "plantações de soja no Centro-Oeste, visando reduzir perdas de produtividade."
+    )
+    r = c.post(
         f"/projects/{pid}/tree/nodes/tema_delimitacao/gate",
-        json={"user_input": "Quero estudar redes neurais.", "history": []},
+        json={"user_input": long_answer, "history": [{"role": "user", "content": "oi"}]},
         headers=headers,
     )
-    assert r1.status_code == 200
-    data1 = r1.json()
-    assert data1["done"] is False
-    assert "Como você relaciona a escolha" in data1["message_to_student"]
-    assert "attempt_id" in data1
+    assert r.status_code == 503
+    assert "aviso consciente" in r.json()["detail"]
 
-    # 2. Second turn: elaborate answer -> liberates node
-    r2 = c.post(
-        f"/projects/{pid}/tree/nodes/tema_delimitacao/gate",
-        json={
-            "user_input": (
-                "Vou investigar a aplicação de redes neurais convolucionais na detecção precoce de pragas em "
-                "plantações de soja no Centro-Oeste, visando reduzir perdas de produtividade e custos com defensivos agrícolas."
-            ),
-            "history": [
-                {"role": "user", "content": "Quero estudar redes neurais."},
-                {"role": "assistant", "content": data1["message_to_student"]},
-            ],
-        },
-        headers=headers,
-    )
-    assert r2.status_code == 200
-    data2 = r2.json()
-    assert data2["done"] is True
-    assert data2["outcome"] == "liberar"
-    assert data2["rubric_scores"]["clareza"] == 2
-
-    # Verify node status updated to done and next node unlocked
     tree = c.get(f"/projects/{pid}/tree", headers=headers).json()
     tema_node = next(n for n in tree["nodes"] if n["key"] == "tema_delimitacao")
-    assert tema_node["status"] == "done"
+    assert tema_node["status"] != "done"  # never approved without a real evaluation
 
-    problema_node = next(n for n in tree["nodes"] if n["key"] == "problema_pesquisa")
-    assert problema_node["status"] == "available"
+    # the honest escape hatch keeps working without an LLM
+    r_skip = c.post(
+        f"/projects/{pid}/tree/nodes/tema_delimitacao/gate",
+        json={"skip": True, "skip_reason": "Combinado com o orientador."},
+        headers=headers,
+    )
+    assert r_skip.status_code == 200
+    assert r_skip.json()["outcome"] == "pular"
+
+
+def test_gate_llm_outage_returns_503_and_opens_circuit():
+    class FailingLLM:
+        model = "failing"
+        calls = 0
+
+        def complete_json(self, system, user, schema):
+            FailingLLM.calls += 1
+            raise RuntimeError("provider down")
+
+    c, repo = make_client(FailingLLM())
+    headers, pid = register_and_create_project(c)
+    for _ in range(4):
+        r = c.post(
+            f"/projects/{pid}/tree/nodes/tema_delimitacao/gate",
+            json={"user_input": "Resposta qualquer", "history": []},
+            headers=headers,
+        )
+        assert r.status_code == 503
+    assert FailingLLM.calls == 3  # 4th request failed fast: circuit open
+    caps = c.get("/capabilities").json()
+    assert caps["llm_configured"] is True and caps["llm_available"] is False
 
 
 def test_gate_turn_skip_with_conscious_warning():

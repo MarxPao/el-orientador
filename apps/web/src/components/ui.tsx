@@ -291,29 +291,42 @@ export function StatusBadge({
 }
 
 /**
- * Prisma de Autoria em Gradiente Contínuo + Indicador Forense Real (Manual v2):
- * Combina:
- * 1. Espectro de composição em gradiente (Oliva #5F6E2F -> Roxo #4B2A7B -> Laranja #E8761E)
- * 2. Marcador do Índice Forense Estilométrico (avalia se o texto é de fato humano ou padrão de IA)
+ * Prisma de Autoria: composição do texto segundo o REGISTRO de proveniência (o que a IA inseriu no editor,
+ * o que foi colado e o que o autor declarou como seu). Não há nota estilométrica de "% IA".
+ * Laranja só como preenchimento, nunca como cor de texto.
  */
+const PRISM_SEGMENTS: {
+  key: "human" | "declared_own" | "quoted" | "polished" | "ai_revised" | "ai_drafted" | "pasted";
+  label: string;
+  fill: string;
+}[] = [
+  { key: "human", label: "Autoral", fill: "#5F6E2F" },
+  { key: "declared_own", label: "Colado, declarado do autor", fill: "#8A9A4B" },
+  { key: "quoted", label: "Citação verificada", fill: "#7C8F9E" },
+  { key: "polished", label: "Revisão leve de IA", fill: "#4B2A7B" },
+  { key: "ai_revised", label: "Derivado de rascunho de IA, editado", fill: "#A5683A" },
+  { key: "ai_drafted", label: "Redigido por IA", fill: "#E8761E" },
+  { key: "pasted", label: "Colado de fora", fill: "#B5471F" },
+];
+
 export function AuthorshipPrismBar({
   prism,
-  title = "Prisma de autoria e validação forense",
+  title = "Prisma de autoria",
 }: {
   prism: AuthorshipPrism;
   title?: string;
 }) {
-  const forensicScore =
-    prism.forensics?.measured_ai_score ?? prism.measured_ai_score ?? prism.ai_drafted_pct;
-  const burstiness =
-    prism.forensics?.burstiness_score ?? prism.burstiness_score ?? 85;
-  const stop1 = Math.max(0, Math.min(100, prism.human_pct));
-  const stop2 = Math.max(stop1, Math.min(100, prism.human_pct + prism.polished_pct));
-
-  const dynamicGradient =
-    prism.total_words === 0
-      ? "linear-gradient(90deg, #5F6E2F 0%, #5F6E2F 100%)"
-      : `linear-gradient(90deg, #5F6E2F 0%, #5F6E2F ${Math.max(0, stop1 - 6)}%, #4B2A7B ${stop1}%, #4B2A7B ${Math.max(stop1, stop2 - 6)}%, #E8761E ${stop2}%, #E8761E 100%)`;
+  const rec = prism as unknown as Record<string, number | undefined>;
+  const segs = PRISM_SEGMENTS.map((s) => ({
+    ...s,
+    pct: rec[`${s.key}_pct`] ?? 0,
+    words: rec[`${s.key}_words`] ?? 0,
+  }));
+  const visible = segs.filter((s) => s.pct > 0);
+  const summary = segs
+    .filter((s) => s.words > 0)
+    .map((s) => `${s.pct}% ${s.label.toLowerCase()}`)
+    .join(" · ");
 
   return (
     <div
@@ -328,77 +341,58 @@ export function AuthorshipPrismBar({
         {prism.requires_disclosure ? (
           <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-orange px-2.5 py-0.5 text-[13px] font-bold text-ink">
             <AlertIcon className="h-3.5 w-3.5 shrink-0 text-ink" />
-            <span>
-              Declaração de IA obrigatória ({prism.ai_drafted_pct}% registrado · {forensicScore}% índice forense)
-            </span>
+            <span>Declaração de uso de IA ou de texto externo necessária</span>
           </span>
         ) : (
           <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-done px-2.5 py-0.5 text-[13px] font-bold text-paper">
             <CheckIcon className="h-3.5 w-3.5" />
-            <span>
-              Isento de nota de geração textual ({100 - forensicScore}% naturalidade humana)
-            </span>
+            <span>Nenhum texto de IA ou colagem registrado</span>
           </span>
         )}
       </div>
 
-      {/* Barra de Gradiente Contínuo da Composição + Pino do Detector Forense */}
-      <div className="space-y-1.5">
-        <div className="relative h-4 w-full rounded-full border border-borda p-0.5 bg-paper">
-          <div
-            className="h-full w-full rounded-full transition-all duration-300"
-            style={{ background: dynamicGradient }}
-            title={`Composição: ${prism.human_pct}% autoral · ${prism.polished_pct}% revisão leve · ${prism.ai_drafted_pct}% redigido por IA`}
-          />
-          {prism.total_words > 0 && (
+      <div
+        role="img"
+        aria-label={summary || "100% autoral"}
+        className="flex h-4 w-full overflow-hidden rounded-full border border-borda bg-paper"
+      >
+        {visible.length === 0 ? (
+          <div className="h-full w-full" style={{ background: "#5F6E2F" }} />
+        ) : (
+          visible.map((s) => (
             <div
-              className="pointer-events-none absolute -top-1 bottom-[-4px] flex flex-col items-center transition-all duration-300"
-              style={{ left: `calc(${Math.min(98, Math.max(2, forensicScore))}% - 6px)` }}
-              title={`Detector Forense Real: ${forensicScore}% assinatura estilométrica de IA`}
-            >
-              <div className="h-6 w-3 rounded-[4px] border-2 border-ink bg-paper shadow-sm" />
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-locked">
-          <span>0% · Escrita 100% Humana (Oliva)</span>
-          <span className="font-semibold text-ink">
-            Pino Forense Real: {forensicScore}% padrão IA · Burstiness sintática: {burstiness}/100
-          </span>
-          <span>100% · Redação Generativa (Laranja)</span>
-        </div>
+              key={s.key}
+              className="h-full transition-all duration-300"
+              style={{ width: `${s.pct}%`, background: s.fill }}
+              title={`${s.label}: ${s.pct}% (${s.words} pal.)`}
+            />
+          ))
+        )}
       </div>
 
-      {/* Legenda detalhada */}
-      <div className="flex flex-wrap items-center justify-between gap-3 text-[13px] font-medium text-ink pt-0.5">
-        <div className="flex flex-wrap items-center gap-4">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-done" />
-            <span>
-              <strong>{prism.human_pct}%</strong> Autoral ({prism.human_words} pal.)
-            </span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-purple" />
-            <span>
-              <strong>{prism.polished_pct}%</strong> Revisão/Híbrido ({prism.polished_words} pal.)
-            </span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-orange" />
-            <span>
-              <strong>{prism.ai_drafted_pct}%</strong> Redigido por IA com fontes ({prism.ai_drafted_words} pal.)
-            </span>
-          </span>
-        </div>
-      </div>
+      <ul className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] font-medium text-ink">
+        {segs
+          .filter((s) => s.key === "human" || s.words > 0)
+          .map((s) => (
+            <li key={s.key} className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: s.fill }} />
+              <span>
+                <strong>{s.pct}%</strong> {s.label} ({s.words} pal.)
+              </span>
+            </li>
+          ))}
+      </ul>
 
-      {prism.telemetry_discrepancy && prism.discrepancy_message && (
-        <div className="flex items-start gap-2 rounded-[8px] border border-purple/40 bg-paper px-3 py-2 text-[13px] text-ink">
-          <AlertIcon className="mt-0.5 h-4 w-4 shrink-0 text-purple" />
-          <span>{prism.discrepancy_message}</span>
-        </div>
+      {prism.notes && prism.notes.length > 0 && (
+        <ul className="space-y-1 rounded-[8px] border border-borda bg-paper px-3 py-2 text-[13px] text-ink">
+          {prism.notes.map((n, i) => (
+            <li key={i}>{n}</li>
+          ))}
+        </ul>
+      )}
+
+      {prism.limits && prism.limits.length > 0 && (
+        <p className="text-[12px] leading-snug text-locked">{prism.limits.join(" ")}</p>
       )}
     </div>
   );

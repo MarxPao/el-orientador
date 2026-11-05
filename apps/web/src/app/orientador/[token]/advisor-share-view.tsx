@@ -47,6 +47,30 @@ function parseAnchoredComment(raw: string): { anchor: string | null; body: strin
   return { anchor: match[1], body: match[2] };
 }
 
+// ── Node feedback helpers ─────────────────────────────────────────────────────
+
+type NodeItem = {
+  key: string;
+  title: string;
+  phase: string;
+  status: string;
+  skipped_reason?: string;
+};
+
+const NODE_STATUS_COLOR: Record<string, string> = {
+  done: "bg-done/15 text-done border-done/30",
+  skipped: "bg-skipped-bg text-purple border-purple/30",
+  locked: "bg-paper text-locked border-borda",
+  pending: "bg-paper text-locked border-borda",
+};
+
+const NODE_STATUS_LABEL: Record<string, string> = {
+  done: "Concluída",
+  skipped: "Pulada",
+  locked: "Bloqueada",
+  pending: "Pendente",
+};
+
 export default function AdvisorShareView({ token }: { token: string }) {
   const [data, setData] = useState<SharedProjectData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +81,12 @@ export default function AdvisorShareView({ token }: { token: string }) {
   const [anchorQuote, setAnchorQuote] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Node feedback state
+  const [nodeFeedbackDraft, setNodeFeedbackDraft] = useState<Record<string, string>>({});
+  const [nodeSaved, setNodeSaved] = useState<Record<string, string>>({});
+  const [nodeSubmitting, setNodeSubmitting] = useState<string | null>(null);
+  const [expandedNode, setExpandedNode] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,7 +166,39 @@ export default function AdvisorShareView({ token }: { token: string }) {
     }
   }
 
+  async function handleNodeFeedback(nodeKey: string) {
+    const text = nodeFeedbackDraft[nodeKey]?.trim();
+    if (!text || !advisorEmail.trim()) return;
+    setNodeSubmitting(nodeKey);
+    try {
+      await api<unknown>(`/shared/${token}/tree/${nodeKey}/feedback`, {
+        method: "POST",
+        body: {
+          advisor_email: advisorEmail.trim(),
+          advisor_name: advisorName.trim(),
+          content: text,
+        },
+      });
+      setNodeSaved((prev) => ({ ...prev, [nodeKey]: text }));
+      setNodeFeedbackDraft((prev) => ({ ...prev, [nodeKey]: "" }));
+    } catch {
+      // Silent: feedback is best-effort; user sees the draft stays
+    } finally {
+      setNodeSubmitting(null);
+    }
+  }
+
   const payload = data?.report_payload;
+
+  // Merge all tree nodes into a single flat list for the feedback panel
+  const allNodes: NodeItem[] = useMemo(() => {
+    if (!payload) return [];
+    return [
+      ...payload.progress_tree.completed.map((n) => ({ ...n, status: "done" })),
+      ...payload.progress_tree.skipped_with_warning.map((n) => ({ ...n, status: "skipped" })),
+      ...payload.progress_tree.pending.map((n) => ({ ...n, status: "pending" })),
+    ].sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
+  }, [payload]);
 
   return (
     <div className="min-h-screen flex flex-col bg-paper text-ink">
@@ -199,9 +261,9 @@ export default function AdvisorShareView({ token }: { token: string }) {
             </div>
 
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
-              {/* Coluna Esquerda (7 cols): Auditoria de 1 Página + Manuscrito com Seleção de Trecho */}
+              {/* Coluna Esquerda (7 cols): Auditoria + Árvore + Manuscrito */}
               <div className="lg:col-span-7 space-y-6">
-                {/* Auditoria de Etapas Puladas e Evidências */}
+                {/* 1. Resumo de progresso */}
                 <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-5">
                   <h2 className="font-display text-2xl text-ink border-b border-borda pb-3">
                     1. Resumo de progresso e evidências verificadas
@@ -254,7 +316,7 @@ export default function AdvisorShareView({ token }: { token: string }) {
                       <ul className="space-y-2 text-[15px]">
                         {payload.progress_tree.skipped_with_warning.map((sk) => (
                           <li key={sk.key} className="text-ink">
-                            <strong>{sk.title}:</strong> “{sk.skipped_reason}”
+                            <strong>{sk.title}:</strong> "{sk.skipped_reason}"
                           </li>
                         ))}
                       </ul>
@@ -290,12 +352,122 @@ export default function AdvisorShareView({ token }: { token: string }) {
                   )}
                 </section>
 
-                {/* Leitura das Seções do Manuscrito com Grifo de Trecho em Revisão */}
+                {/* 2. Árvore de progresso com feedback por etapa */}
+                <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4">
+                  <div className="border-b border-borda pb-3">
+                    <h2 className="font-display text-2xl text-ink">
+                      2. Árvore de progresso — feedback por etapa
+                    </h2>
+                    <p className="text-[14px] text-locked mt-0.5">
+                      Expanda qualquer etapa para registrar orientações específicas sobre ela.
+                    </p>
+                  </div>
+
+                  {allNodes.length === 0 ? (
+                    <p className="text-[14px] text-locked italic">Nenhuma etapa encontrada no relatório.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {allNodes.map((node) => {
+                        const isExpanded = expandedNode === node.key;
+                        const saved = nodeSaved[node.key];
+                        const draft = nodeFeedbackDraft[node.key] ?? "";
+                        const statusCls = NODE_STATUS_COLOR[node.status] ?? NODE_STATUS_COLOR.pending;
+
+                        return (
+                          <li key={node.key} className="rounded-[10px] border border-borda overflow-hidden">
+                            {/* Row header */}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedNode(isExpanded ? null : node.key)}
+                              className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-paper/60 transition"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span className={`shrink-0 rounded-[6px] border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider ${statusCls}`}>
+                                  {NODE_STATUS_LABEL[node.status] ?? node.status}
+                                </span>
+                                <span className="text-[15px] font-medium text-ink truncate">{node.title}</span>
+                                {saved && (
+                                  <span className="shrink-0 text-[11px] font-bold text-done bg-done/10 rounded-full px-2 py-0.5">
+                                    ✓ Parecer
+                                  </span>
+                                )}
+                              </div>
+                              <svg
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className={`shrink-0 h-4 w-4 text-locked transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                              >
+                                <path d="M6 4l4 4-4 4" />
+                              </svg>
+                            </button>
+
+                            {/* Expanded body */}
+                            {isExpanded && (
+                              <div className="border-t border-borda bg-paper/40 px-4 py-4 space-y-3">
+                                {node.skipped_reason && (
+                                  <div className="rounded-[8px] border border-purple/30 bg-skipped-bg px-3 py-2 text-[14px]">
+                                    <span className="text-[12px] font-bold uppercase tracking-wider text-purple block mb-0.5">
+                                      Justificativa do orientando:
+                                    </span>
+                                    <p className="text-ink">"{node.skipped_reason}"</p>
+                                  </div>
+                                )}
+
+                                {saved && (
+                                  <div className="rounded-[8px] bg-done/10 border border-done/30 px-3 py-2 text-[14px]">
+                                    <span className="text-[12px] font-bold uppercase tracking-wider text-done block mb-0.5">
+                                      Seu parecer registrado:
+                                    </span>
+                                    <p className="text-ink whitespace-pre-wrap">{saved}</p>
+                                  </div>
+                                )}
+
+                                <div className="space-y-2">
+                                  <label className="block text-[13px] font-medium text-ink">
+                                    {saved ? "Adicionar novo comentário nesta etapa:" : "Registrar orientação para esta etapa:"}
+                                  </label>
+                                  <textarea
+                                    rows={3}
+                                    value={draft}
+                                    onChange={(e) =>
+                                      setNodeFeedbackDraft((prev) => ({ ...prev, [node.key]: e.target.value }))
+                                    }
+                                    placeholder={`Ex.: Para "${node.title}", recomendo que o orientando consulte…`}
+                                    className="w-full resize-none rounded-[10px] border border-borda bg-superficie px-3 py-2.5 text-[14px] text-ink focus:border-purple outline-none transition"
+                                  />
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[12px] text-locked">
+                                      Enviado como <strong>{advisorName || advisorEmail}</strong>
+                                    </p>
+                                    <button
+                                      type="button"
+                                      disabled={!draft.trim() || nodeSubmitting === node.key}
+                                      onClick={() => void handleNodeFeedback(node.key)}
+                                      className="inline-flex h-8 items-center gap-1.5 rounded-[8px] bg-purple px-3.5 text-[13px] font-medium text-paper hover:bg-purple/90 disabled:opacity-50 transition"
+                                    >
+                                      {nodeSubmitting === node.key ? "…" : "Registrar"}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </section>
+
+                {/* 3. Manuscrito do aluno */}
                 <section className="rounded-[16px] border border-borda bg-superficie p-6 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda pb-3">
                     <div>
                       <h2 className="font-display text-2xl text-ink">
-                        2. Manuscrito do aluno (clique em um parágrafo para grifar)
+                        3. Manuscrito do aluno (clique em um parágrafo para grifar)
                       </h2>
                       <p className="text-[14px] text-locked">
                         Selecione a seção abaixo e clique em qualquer trecho para ancorar sua pergunta em laranja.
@@ -387,6 +559,28 @@ export default function AdvisorShareView({ token }: { token: string }) {
                   </h2>
                 </div>
 
+                {/* Identificação do orientador */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block text-[14px] font-medium text-ink">
+                    Seu nome
+                    <input
+                      type="text"
+                      value={advisorName}
+                      onChange={(e) => setAdvisorName(e.target.value)}
+                      className="mt-1 w-full h-[42px] rounded-[10px] border border-borda bg-paper/40 px-3 text-[15px] text-ink"
+                    />
+                  </label>
+                  <label className="block text-[14px] font-medium text-ink">
+                    Seu e-mail institucional
+                    <input
+                      type="email"
+                      value={advisorEmail}
+                      onChange={(e) => setAdvisorEmail(e.target.value)}
+                      className="mt-1 w-full h-[42px] rounded-[10px] border border-borda bg-paper/40 px-3 text-[15px] text-ink"
+                    />
+                  </label>
+                </div>
+
                 {/* Lista de Comentários da Seção */}
                 <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
                   {!activeSection || activeSection.comments.length === 0 ? (
@@ -412,7 +606,7 @@ export default function AdvisorShareView({ token }: { token: string }) {
                                 Trecho grifado:
                               </span>
                               <mark className="mark-orange font-serif-academic text-[15px]">
-                                “{parsed.anchor}”
+                                "{parsed.anchor}"
                               </mark>
                             </div>
                           )}
@@ -433,29 +627,6 @@ export default function AdvisorShareView({ token }: { token: string }) {
 
                 {/* Formulário para o Orientador Humano registrar pergunta/parecer */}
                 <form onSubmit={handleSubmitComment} className="border-t border-borda pt-4 space-y-3.5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <label className="block text-[14px] font-medium text-ink">
-                      Seu nome
-                      <input
-                        type="text"
-                        required
-                        value={advisorName}
-                        onChange={(e) => setAdvisorName(e.target.value)}
-                        className="mt-1 w-full h-[42px] rounded-[10px] border border-borda bg-paper/40 px-3 text-[15px] text-ink"
-                      />
-                    </label>
-                    <label className="block text-[14px] font-medium text-ink">
-                      Seu e-mail institucional
-                      <input
-                        type="email"
-                        required
-                        value={advisorEmail}
-                        onChange={(e) => setAdvisorEmail(e.target.value)}
-                        className="mt-1 w-full h-[42px] rounded-[10px] border border-borda bg-paper/40 px-3 text-[15px] text-ink"
-                      />
-                    </label>
-                  </div>
-
                   {anchorQuote && (
                     <div className="flex items-start justify-between gap-2 rounded-[10px] border border-borda bg-paper p-3 text-[14px]">
                       <div>
@@ -463,7 +634,7 @@ export default function AdvisorShareView({ token }: { token: string }) {
                           Trecho do manuscrito selecionado:
                         </span>
                         <mark className="mark-orange font-serif-academic text-[15px]">
-                          “{anchorQuote}”
+                          "{anchorQuote}"
                         </mark>
                       </div>
                       <button

@@ -12,6 +12,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .authorship import compute_project_authorship, compute_section_authorship
+
+
+def _events(repo, project_id: str) -> dict:
+    out: dict = {}
+    for e in repo.list_provenance_events(project_id):
+        out.setdefault(e["section_id"], []).append(e)
+    return out
 from .repo import Repo
 from .tree import load_template
 
@@ -123,14 +130,14 @@ def generate_advisor_report_payload(repo: Repo, project_id: str, project: dict[s
         "manuscript": {
             "sections_count": len(sections),
             "sections_with_evidence_count": len(sections_with_evidence),
-            "authorship_prism": compute_project_authorship(sections),
+            "authorship_prism": compute_project_authorship(sections, events_by_section=_events(repo, project_id)),
             "sections": [
                 {
                     "id": s["id"],
                     "title": s["title"],
                     "position": s["position"],
                     "concepts_linked_count": len(s.get("concept_ids", [])),
-                    "authorship": compute_section_authorship(s),
+                    "authorship": compute_section_authorship(s, events=_events(repo, project_id).get(s["id"], [])),
                 }
                 for s in sections
             ],

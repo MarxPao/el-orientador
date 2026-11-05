@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .llm_gateway import call_json
 from .pipeline.extract import load_prompt
 from .pipeline.llm import LLMClient
 
@@ -74,6 +75,6 @@ def run_gate_turn(
     prompt = build_gate_user_message(
         work_type, node_title, node_description, previous_decisions, history, user_input
     )
-    result = client.complete_json(system, prompt, GATE_SCHEMA)
+    result = call_json(client, system, prompt, GATE_SCHEMA, operation="gate")
     result["prompt_version"] = version
     return result

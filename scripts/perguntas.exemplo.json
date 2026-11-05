@@ -1,0 +1,5 @@
+[
+  {"pdf": "livro1.pdf", "question": "Como o autor define evasão escolar?", "pages": [34, 35]},
+  {"pdf": "livro1.pdf", "question": "Por que os alunos abandonam o ensino médio por motivos de renda?", "pages": [52]},
+  {"pdf": "livro2.pdf", "question": "Qual metodologia de coleta de dados foi usada?", "pages": [18]}
+]

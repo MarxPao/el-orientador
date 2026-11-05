@@ -117,3 +117,15 @@ def test_tree_api_queuing_and_isolation():
     ho = {"Authorization": f"Bearer {token_other}"}
     assert client.get(f"/projects/{pid}/tree", headers=ho).status_code == 404
     assert client.patch(f"/projects/{pid}/tree/nodes/tema_delimitacao", json={"status": "done"}, headers=ho).status_code == 404
+
+
+def test_locked_node_cannot_be_completed_or_skipped_through_the_api():
+    client, h, pid = setup_client()
+    for body in ({"status": "done"}, {"status": "skipped", "skipped_reason": "x"}):
+        r = client.patch(f"/projects/{pid}/tree/nodes/marco_teorico", json=body, headers=h)
+        assert r.status_code == 409, r.text
+    nodes = {n["key"]: n for n in client.get(f"/projects/{pid}/tree", headers=h).json()["nodes"]}
+    assert nodes["marco_teorico"]["status"] == "locked"
+    # queueing a locked node is still allowed (it is only a flag), and unlocking works through prerequisites
+    assert client.patch(f"/projects/{pid}/tree/nodes/marco_teorico", json={"queued": True}, headers=h).status_code == 200
+

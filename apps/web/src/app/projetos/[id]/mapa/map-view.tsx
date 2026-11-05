@@ -514,16 +514,11 @@ export default function MapView({ id }: { id: string }) {
                 type="text"
                 value={pdfTitleInput}
                 onChange={(e) => setPdfTitleInput(e.target.value)}
+                aria-label="Título do artigo (opcional)"
                 placeholder="Título do artigo (opcional)"
                 className="h-[42px] rounded-[10px] border border-borda bg-paper/50 px-3 text-[14px] text-ink"
               />
-              <input
-                type="file"
-                name="pdf_file"
-                accept="application/pdf"
-                aria-label="Arquivo PDF para análise"
-                className="text-[13px] text-ink file:mr-2 file:rounded-[8px] file:border file:border-purple file:bg-skipped-bg file:px-3 file:py-1.5 file:text-[13px] file:font-bold file:text-purple file:cursor-pointer"
-              />
+              <PdfFileField />
               <Button type="submit" variant="secondary" disabled={uploadingPdf}>
                 {uploadingPdf ? "Dissecando PDF…" : "Enviar e analisar PDF"}
               </Button>
@@ -562,7 +557,7 @@ export default function MapView({ id }: { id: string }) {
                 <button
                   type="button"
                   onClick={() => router.push(`/projetos/${id}/editor`)}
-                  className="text-[14px] font-bold text-purple underline cursor-pointer"
+                  className="inline-flex min-h-[44px] items-center text-[14px] font-bold text-purple underline cursor-pointer"
                 >
                   Ir para o Costureiro Dialético no Editor →
                 </button>
@@ -649,6 +644,7 @@ export default function MapView({ id }: { id: string }) {
                                   [`${activeDocGuide.document_id}_${idx}`]: e.target.value,
                                 }))
                               }
+                              aria-label="Sua resposta crítica à pergunta"
                               placeholder="Anote sua resposta crítica aqui…"
                               className="w-full h-[36px] rounded-[8px] border border-paper/40 bg-paper px-2.5 text-[13px] text-ink"
                             />
@@ -1372,5 +1368,26 @@ function EvidencePanel({
         )}
       </div>
     </div>
+  );
+}
+
+/** File picker in Portuguese: the browser's own "Choose File / No file chosen" follows the browser language. */
+function PdfFileField() {
+  const [fileName, setFileName] = useState("");
+  return (
+    <label className="inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-[13px] text-ink focus-within:outline focus-within:outline-2 focus-within:outline-purple">
+      <span className="rounded-[8px] border border-purple bg-skipped-bg px-3 py-2 text-[13px] font-bold text-purple">
+        Escolher PDF
+      </span>
+      <span className="max-w-[180px] truncate text-locked">{fileName || "nenhum arquivo"}</span>
+      <input
+        type="file"
+        name="pdf_file"
+        accept="application/pdf"
+        aria-label="Arquivo PDF para análise"
+        className="sr-only"
+        onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
+      />
+    </label>
   );
 }

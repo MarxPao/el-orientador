@@ -11,9 +11,22 @@ from app.main import create_app
 from app.repo import InMemoryRepo
 
 
-def make_client():
+class ApprovingGateLLM:
+    """Test double: the Socratic gate approves on the first substantive answer."""
+    model = "mock-gate"
+
+    def complete_json(self, system, user, schema):
+        return {
+            "message_to_student": "Delimitação clara e justificada.",
+            "done": True,
+            "outcome": "liberar",
+            "rubric_scores": {"clareza": 2, "justificativa": 2, "coerencia": 2},
+        }
+
+
+def make_client(llm_client=None):
     repo = InMemoryRepo()
-    app = create_app(repo=repo)
+    app = create_app(repo=repo, client=llm_client)
     return TestClient(app), repo
 
 
@@ -59,7 +72,7 @@ def test_advisor_invite_and_advising_access():
 
 
 def test_advisor_report_generation():
-    c, repo = make_client()
+    c, repo = make_client(ApprovingGateLLM())
     student_headers = register(c, "estudante2@usp.br", "Estudante 2")
     p = c.post("/projects", json={"title": "TCC Relatorio", "work": "tcc"}, headers=student_headers).json()
     pid = p["id"]

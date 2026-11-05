@@ -5,3 +5,4 @@ out/
 prototype/data/pdfs/*.pdf
 node_modules/
 storage/
+backups/

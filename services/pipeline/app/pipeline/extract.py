@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Callable
 
 from pydantic import ValidationError
 
@@ -55,7 +56,12 @@ def build_user_prompt(template: str, title: str, year: str, pages: list[str], st
 
 
 def extract_claims(
-    pages: list[str], title: str, year: int | None, client: LLMClient, pages_per_chunk: int = PAGES_PER_CHUNK
+    pages: list[str],
+    title: str,
+    year: int | None,
+    client: LLMClient,
+    pages_per_chunk: int = PAGES_PER_CHUNK,
+    on_chunk: Callable[[int, int], None] | None = None,
 ) -> dict:
     """Return {accepted, rejected, errors, n_chunks, prompt_version}. `accepted` are VerifiedClaim objects."""
     version, system, template = load_prompt()
@@ -63,17 +69,21 @@ def extract_claims(
     rejected: list[VerifiedClaim] = []
     errors: list[dict] = []
     ranges = chunk_ranges(len(pages), pages_per_chunk)
-    for start, end in ranges:
+    for done, (start, end) in enumerate(ranges, start=1):
         user = build_user_prompt(template, title, str(year or "s.d."), pages, start, end)
         try:
             output = ExtractionOutput.model_validate(client.complete_json(system, user, SCHEMA))
         except (ValidationError, RuntimeError) as exc:  # LLMError is a RuntimeError
             errors.append({"pages": [start, end], "error": type(exc).__name__})  # no content in logs
+            if on_chunk:
+                on_chunk(done, len(ranges))
             continue
         for c in output.claims:
             r = verify_quote(c.quote, pages, expected_page=c.page)  # against the WHOLE document
             vc = VerifiedClaim(**c.model_dump(), quote_verified=r.found, verify_method=r.method,
                                page_verified=r.page, char_start=r.start, char_end=r.end)
             (accepted if r.found else rejected).append(vc)
+        if on_chunk:
+            on_chunk(done, len(ranges))
     return {"accepted": accepted, "rejected": rejected, "errors": errors, "n_chunks": len(ranges),
             "prompt_version": version}

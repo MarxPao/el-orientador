@@ -6,6 +6,8 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Protocol
 
+from . import search as _search
+
 
 class EmailTaken(Exception):
     pass
@@ -34,7 +36,7 @@ class Repo(Protocol):
     def list_documents(self, project_id: str) -> list[dict]: ...
     def get_document(self, document_id: str) -> dict | None: ...
     def update_document(self, document_id: str, **fields) -> None: ...
-    def save_pages(self, document_id: str, pages: list[str]) -> None: ...
+    def save_pages(self, document_id: str, pages: list[str], sources: list[str] | None = None) -> None: ...
     def get_pages(self, document_id: str) -> list[str]: ...
     def add_claims(self, document_id: str, claims: list[dict], model: str | None, prompt_version: str | None) -> int: ...
     def list_claims(self, document_id: str) -> list[dict]: ...
@@ -80,7 +82,57 @@ class Repo(Protocol):
     def list_section_comments(self, section_id: str) -> list[dict]: ...
     def update_section_comment(self, comment_id: str, **fields) -> dict | None: ...
     def delete_section_comment(self, comment_id: str) -> bool: ...
+    def get_section_comment(self, section_id: str, comment_id: str) -> dict | None: ...
+    def delete_document(self, project_id: str, document_id: str) -> dict | None: ...
+    def list_section_versions(self, project_id: str, section_id: str) -> list[dict]: ...
+    def get_section_version(self, project_id: str, section_id: str, version_id: str) -> dict | None: ...
+    def add_node_feedback(self, project_id: str, node_key: str, advisor_email: str, advisor_name: str | None,
+                          content: str) -> dict: ...
+    def list_node_feedback(self, project_id: str, node_key: str) -> list[dict]: ...
+    def add_provenance_event(self, project_id: str, section_id: str, kind: str, source: str, words: int,
+                             text: str | None, meta: dict | None, created_by: str | None) -> dict: ...
+    def list_provenance_events(self, project_id: str, section_id: str | None = None) -> list[dict]: ...
+    def declare_provenance_event(self, project_id: str, event_id: str, declared: str | None) -> dict | None: ...
+    def replace_chunks(self, document_id: str, chunks: list[dict]) -> int: ...
+    def chunks_to_embed(self, document_id: str, model: str, limit: int) -> list[dict]: ...
+    def save_embeddings(self, items: list[tuple[str, list[float]]], model: str) -> None: ...
+    def chunk_stats(self, project_id: str, model: str | None) -> dict: ...
+    def search_keyword(self, project_id: str, query: str, limit: int) -> list[dict]: ...
+    def search_vector(self, project_id: str, vector: list[float], model: str, limit: int) -> list[dict]: ...
+    def add_error_event(self, source: str, error_type: str, message: str, stack: str | None, route: str | None,
+                        request_id: str | None, user_id: str | None) -> dict: ...
+    def list_error_events(self, limit: int = 100) -> list[dict]: ...
+    def purge_error_events(self, older_than_days: int) -> int: ...
     def get_beta_metrics(self) -> dict: ...
+
+
+VERSION_MIN_INTERVAL_SECONDS = 300  # autosaves inside this window share one restore point
+VERSION_KEEP = 50                   # restore points kept per section
+
+
+def _count_words(content) -> int:
+    """Words in a TipTap JSON document (or plain string)."""
+    if isinstance(content, str):
+        return len(content.split())
+    n = 0
+    if isinstance(content, dict):
+        if content.get("type") == "text":
+            n += len(str(content.get("text", "")).split())
+        for child in content.get("content") or []:
+            n += _count_words(child)
+    return n
+
+
+def _has_text(content) -> bool:
+    return _count_words(content) > 0
+
+
+def _split_version_kwargs(fields: dict) -> tuple[dict, str | None, bool]:
+    """`version_by` and `force_version` steer the restore-point snapshot; they are not section columns."""
+    fields = dict(fields)
+    by = fields.pop("version_by", None)
+    force = bool(fields.pop("force_version", False))
+    return fields, by, force
 
 
 class UnverifiedClaim(ValueError):
@@ -93,6 +145,7 @@ class InMemoryRepo:
         self.projects: dict[str, dict] = {}
         self.documents: dict[str, dict] = {}
         self.pages: dict[str, list[str]] = {}
+        self.page_sources: dict[str, list[str]] = {}
         self.concepts: dict[tuple[str, str], str] = {}
         self.concept_labels: dict[str, str] = {}
         self.edges: list[dict] = []
@@ -105,6 +158,11 @@ class InMemoryRepo:
         self.advisors: list[dict] = []
         self.advisor_reports: list[dict] = []
         self.section_comments: list[dict] = []
+        self.section_versions: list[dict] = []
+        self.node_feedback: list[dict] = []
+        self.chunks: list[dict] = []
+        self.provenance: list[dict] = []
+        self.error_events: list[dict] = []
         self.ai_usage: list[dict] = []
 
     def get_document(self, document_id):
@@ -113,8 +171,9 @@ class InMemoryRepo:
     def update_document(self, document_id, **fields):
         self.documents[document_id].update(fields)
 
-    def save_pages(self, document_id, pages):
+    def save_pages(self, document_id, pages, sources=None):
         self.pages[document_id] = list(pages)
+        self.page_sources[document_id] = list(sources) if sources else ["native"] * len(pages)
 
     def get_pages(self, document_id):
         return list(self.pages.get(document_id, []))
@@ -295,16 +354,161 @@ class InMemoryRepo:
         return {**sec, "concept_ids": cids}
 
     def update_section(self, project_id, section_id, **fields):
+        fields, by, force = _split_version_kwargs(fields)
         sec = next((s for s in self.sections if s["id"] == section_id and s["project_id"] == project_id), None)
         if not sec:
             return None
         allowed = {"title", "parent_id", "position", "content"}
+        if "content" in fields and fields["content"] != sec.get("content") and _has_text(sec.get("content")):
+            self._snapshot(sec, by, force)
         for k, v in fields.items():
             if k in allowed:
                 sec[k] = v
         sec["updated_at"] = datetime.now(timezone.utc).isoformat()
         cids = list(self.section_concepts.get(sec["id"], set()))
         return {**sec, "concept_ids": cids}
+
+    def _snapshot(self, sec, by, force):
+        """Save the content that is about to be replaced. Autosaves within the interval share one point."""
+        mine = [v for v in self.section_versions if v["section_id"] == sec["id"]]
+        now = datetime.now(timezone.utc)
+        if mine and not force:
+            last = datetime.fromisoformat(mine[-1]["created_at"])
+            if (now - last).total_seconds() < VERSION_MIN_INTERVAL_SECONDS:
+                return
+        if mine and mine[-1]["content_snapshot"] == sec.get("content"):
+            return
+        self.section_versions.append({
+            "id": str(uuid.uuid4()), "section_id": sec["id"], "content_snapshot": json.loads(json.dumps(sec.get("content") or {})),
+            "word_count": _count_words(sec.get("content")), "created_at": now.isoformat(), "created_by": by,
+        })
+        extra = [v for v in self.section_versions if v["section_id"] == sec["id"]][:-VERSION_KEEP]
+        if extra:
+            drop = {v["id"] for v in extra}
+            self.section_versions = [v for v in self.section_versions if v["id"] not in drop]
+
+    def list_section_versions(self, project_id, section_id):
+        if not any(s["id"] == section_id and s["project_id"] == project_id for s in self.sections):
+            return []
+        return [dict(v) for v in reversed([v for v in self.section_versions if v["section_id"] == section_id])]
+
+    def get_section_version(self, project_id, section_id, version_id):
+        if not any(s["id"] == section_id and s["project_id"] == project_id for s in self.sections):
+            return None
+        v = next((v for v in self.section_versions if v["id"] == version_id and v["section_id"] == section_id), None)
+        return dict(v) if v else None
+
+    def add_node_feedback(self, project_id, node_key, advisor_email, advisor_name, content):
+        f = {"id": str(uuid.uuid4()), "project_id": project_id, "node_key": node_key,
+             "advisor_email": advisor_email.strip().lower(), "advisor_name": advisor_name, "content": content,
+             "created_at": datetime.now(timezone.utc).isoformat()}
+        self.node_feedback.append(f)
+        return dict(f)
+
+    def list_node_feedback(self, project_id, node_key):
+        return [dict(f) for f in self.node_feedback if f["project_id"] == project_id and f["node_key"] == node_key]
+
+    # ------------------------------------------------------------------ provenance ledger
+    def add_provenance_event(self, project_id, section_id, kind, source, words, text, meta, created_by):
+        if not any(x["id"] == section_id and x["project_id"] == project_id for x in self.sections):
+            raise ValueError("section not in project")
+        e = {"id": str(uuid.uuid4()), "project_id": project_id, "section_id": section_id, "kind": kind,
+             "source": source, "words": words, "text": text, "meta": dict(meta or {}), "declared": None,
+             "created_by": created_by, "created_at": datetime.now(timezone.utc).isoformat()}
+        self.provenance.append(e)
+        return dict(e)
+
+    def list_provenance_events(self, project_id, section_id=None):
+        return [dict(e) for e in self.provenance
+                if e["project_id"] == project_id and (section_id is None or e["section_id"] == section_id)]
+
+    def declare_provenance_event(self, project_id, event_id, declared):
+        e = next((e for e in self.provenance if e["id"] == event_id and e["project_id"] == project_id
+                  and e["kind"] == "paste"), None)
+        if not e:
+            return None
+        e["declared"] = declared
+        return dict(e)
+
+    # ------------------------------------------------------------------ local error log
+    def add_error_event(self, source, error_type, message, stack, route, request_id, user_id):
+        from datetime import datetime, timezone
+
+        e = {"id": str(uuid.uuid4()), "source": source, "error_type": error_type, "message": message, "stack": stack,
+             "route": route, "request_id": request_id, "user_id": user_id,
+             "created_at": datetime.now(timezone.utc).isoformat()}
+        self.error_events.append(e)
+        return dict(e)
+
+    def list_error_events(self, limit=100):
+        return [dict(e) for e in reversed(self.error_events)][:limit]
+
+    def purge_error_events(self, older_than_days):
+        from datetime import datetime, timedelta, timezone
+
+        cut = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        keep = [e for e in self.error_events if e["created_at"] >= cut]
+        n = len(self.error_events) - len(keep)
+        self.error_events = keep
+        return n
+
+    # ------------------------------------------------------------------ passage index
+    def replace_chunks(self, document_id, chunks):
+        project_id = self.documents[document_id]["project_id"]
+        self.chunks = [c for c in self.chunks if c["document_id"] != document_id]
+        for c in chunks:
+            self.chunks.append({"id": str(uuid.uuid4()), "document_id": document_id, "project_id": project_id,
+                                "chunk_no": c["chunk_no"], "page_no": c["page_no"], "text": c["text"],
+                                "search_text": c["search_text"], "embedding": None, "embedding_model": None})
+        return len(chunks)
+
+    def chunks_to_embed(self, document_id, model, limit):
+        return [{"id": c["id"], "text": c["text"]} for c in self.chunks
+                if c["document_id"] == document_id and c["embedding_model"] != model][:limit]
+
+    def save_embeddings(self, items, model):
+        by_id = {c["id"]: c for c in self.chunks}
+        for cid, vec in items:
+            if cid in by_id:
+                by_id[cid]["embedding"], by_id[cid]["embedding_model"] = list(vec), model
+
+    def chunk_stats(self, project_id, model):
+        mine = [c for c in self.chunks if c["project_id"] == project_id]
+        return {"chunks": len(mine), "embedded": sum(1 for c in mine if model and c["embedding_model"] == model)}
+
+    @staticmethod
+    def _hit(c, score):
+        return {"id": c["id"], "document_id": c["document_id"], "page_no": c["page_no"], "text": c["text"],
+                "score": score}
+
+    def search_keyword(self, project_id, query, limit):
+        mine = [c for c in self.chunks if c["project_id"] == project_id]
+        return [self._hit(c, s) for c, s in _search.bm25_rank(query, mine)[:limit]]
+
+    def search_vector(self, project_id, vector, model, limit):
+        scored = [(c, _search.cosine(vector, c["embedding"])) for c in self.chunks
+                  if c["project_id"] == project_id and c["embedding_model"] == model and c["embedding"]]
+        scored.sort(key=lambda x: -x[1])
+        return [self._hit(c, s) for c, s in scored[:limit]]
+
+    def get_section_comment(self, section_id, comment_id):
+        c = next((c for c in self.section_comments if c["id"] == comment_id and c["section_id"] == section_id), None)
+        return dict(c) if c else None
+
+    def delete_document(self, project_id, document_id):
+        """Remove a document and everything derived from it. Returns the removed row (for the stored file path)."""
+        doc = self.documents.get(document_id)
+        if not doc or doc["project_id"] != project_id:
+            return None
+        gone = {c["id"] for c in self.claims if c["document_id"] == document_id}
+        self.claims = [c for c in self.claims if c["document_id"] != document_id]
+        for e in self.edges:
+            e["evidence"] = [ev for ev in e.get("evidence", []) if ev["claim_id"] not in gone]
+        self.pages.pop(document_id, None)
+        self.page_sources.pop(document_id, None)
+        self.chunks = [c for c in self.chunks if c["document_id"] != document_id]
+        del self.documents[document_id]
+        return doc
 
     def delete_section(self, project_id, section_id):
         to_del = {section_id}
@@ -317,6 +521,8 @@ class InMemoryRepo:
                     to_del.add(s["id"])
                     found = True
         self.sections = [s for s in self.sections if s["id"] not in to_del]
+        self.provenance = [e for e in self.provenance if e["section_id"] not in to_del]
+        self.section_versions = [v for v in self.section_versions if v["section_id"] not in to_del]
         for sid in to_del:
             self.section_concepts.pop(sid, None)
         return True
@@ -605,7 +811,10 @@ class PostgresRepo:
             ).fetchone()
         return _project_row(row) if row else None
 
-    _DOC_COLS = "id, project_id, doi, title, authors, year, venue, metadata_source, retracted, storage_path, analysis, status"
+    _DOC_COLS = (
+        "id, project_id, doi, title, authors, year, venue, metadata_source, retracted, storage_path, analysis, "
+        "status, parse_quality, stage, progress, summary"
+    )
 
     @staticmethod
     def _doc_row(row) -> dict:
@@ -650,20 +859,26 @@ class PostgresRepo:
         return self._doc_row(row) if row else None
 
     def update_document(self, document_id, **fields):
-        allowed = {"status", "parse_quality", "analysis"}
+        from psycopg.types.json import Jsonb
+
+        allowed = {"status", "parse_quality", "analysis", "stage", "progress", "summary", "title", "authors", "year",
+                   "metadata_source"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Campos não permitidos: {set(fields) - allowed}")
         sets = ", ".join(f"{k} = %s" for k in fields)
+        values = [Jsonb(v) if k in ("progress", "summary", "authors") and v is not None else v for k, v in fields.items()]
         with self._conn() as c:
-            c.execute(f"UPDATE documents SET {sets} WHERE id = %s::uuid", (*fields.values(), document_id))
+            c.execute(f"UPDATE documents SET {sets} WHERE id = %s::uuid", (*values, document_id))
 
-    def save_pages(self, document_id, pages):
+    def save_pages(self, document_id, pages, sources=None):
+        sources = sources or ["native"] * len(pages)
         with self._conn() as c:
             c.execute("DELETE FROM document_pages WHERE document_id = %s::uuid", (document_id,))
             with c.cursor() as cur:
                 cur.executemany(
-                    "INSERT INTO document_pages (document_id, page_no, text) VALUES (%s::uuid, %s, %s)",
-                    [(document_id, i, t) for i, t in enumerate(pages, start=1)],
+                    "INSERT INTO document_pages (document_id, page_no, text, source) "
+                    "VALUES (%s::uuid, %s, %s, %s)",
+                    [(document_id, i, t.replace("\x00", ""), src) for i, (t, src) in enumerate(zip(pages, sources), start=1)],
                 )
 
     def get_pages(self, document_id):
@@ -890,9 +1105,29 @@ class PostgresRepo:
         return [{**dict(zip(keys, r)), "id": str(r[0]), "project_id": str(r[1]), "status": str(r[4]),
                  "updated_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7])} for r in rows]
 
+    @staticmethod
+    def _template_rows(keys: set[str]) -> list[tuple[str, int, str]]:
+        """(key, version, definition-json) for each template the nodes refer to, read from app/templates/*.json."""
+        from .tree import TEMPLATES_DIR
+
+        found: dict[str, tuple[int, str]] = {}
+        for f in TEMPLATES_DIR.glob("*.json"):
+            t = json.loads(f.read_text(encoding="utf-8"))
+            if t.get("key") in keys:
+                found[t["key"]] = (int(t.get("version", 1)), json.dumps(t))
+        return [(k, *found.get(k, (1, "{}"))) for k in sorted(keys)]
+
     def save_progress_nodes(self, project_id, nodes):
         saved = []
         with self._conn() as c:
+            # progress_nodes.template_key is a foreign key and nothing else seeds progress_templates:
+            # without this a fresh database fails on the first project's tree.
+            for key, version, definition in self._template_rows({n["template_key"] for n in nodes}):
+                c.execute(
+                    "INSERT INTO progress_templates (key, version, definition) VALUES (%s, %s, %s::jsonb) "
+                    "ON CONFLICT (key) DO NOTHING",
+                    (key, version, definition),
+                )
             for n in nodes:
                 row = c.execute(
                     "INSERT INTO progress_nodes (project_id, template_key, node_key, status, queued, skipped_reason) "
@@ -1035,6 +1270,7 @@ class PostgresRepo:
         }
 
     def update_section(self, project_id, section_id, **fields):
+        fields, by, force = _split_version_kwargs(fields)
         allowed = {"title", "parent_id", "position", "content"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Campos não permitidos: {set(fields) - allowed}")
@@ -1042,6 +1278,8 @@ class PostgresRepo:
         sets = ", ".join(f"{k} = {casts[k]}" for k in fields) + ", updated_at = now()"
         vals = [json.dumps(v) if k == "content" else v for k, v in fields.items()]
         with self._conn() as c:
+            if "content" in fields:
+                self._snapshot(c, project_id, section_id, fields["content"], by, force)
             row = c.execute(
                 f"UPDATE sections SET {sets} WHERE id = %s::uuid AND project_id = %s::uuid "
                 "RETURNING id, project_id, parent_id, title, position, content, updated_at",
@@ -1254,6 +1492,277 @@ class PostgresRepo:
         with self._conn() as c:
             c.execute("DELETE FROM section_comments WHERE id = %s::uuid", (comment_id,))
         return True
+
+    def _snapshot(self, c, project_id, section_id, new_content, by, force) -> None:
+        """Save the content about to be replaced (same rules as InMemoryRepo._snapshot), in the caller's transaction."""
+        cur = c.execute(
+            "SELECT content FROM sections WHERE id = %s::uuid AND project_id = %s::uuid FOR UPDATE",
+            (section_id, project_id),
+        ).fetchone()
+        if not cur:
+            return
+        old = cur[0] or {}
+        if old == new_content or not _has_text(old):
+            return
+        last = c.execute(
+            "SELECT content_snapshot, (now() - created_at) < make_interval(secs => %s) FROM section_versions "
+            "WHERE section_id = %s::uuid ORDER BY created_at DESC, id DESC LIMIT 1",
+            (VERSION_MIN_INTERVAL_SECONDS, section_id),
+        ).fetchone()
+        if last and ((last[1] and not force) or last[0] == old):
+            return
+        c.execute(
+            "INSERT INTO section_versions (section_id, content_snapshot, word_count, created_by) "
+            "VALUES (%s::uuid, %s::jsonb, %s, %s)",
+            (section_id, json.dumps(old), _count_words(old), by),
+        )
+        c.execute(
+            "DELETE FROM section_versions WHERE section_id = %s::uuid AND id NOT IN ("
+            "SELECT id FROM section_versions WHERE section_id = %s::uuid ORDER BY created_at DESC, id DESC LIMIT %s)",
+            (section_id, section_id, VERSION_KEEP),
+        )
+
+    @staticmethod
+    def _version_row(r) -> dict:
+        return {
+            "id": str(r[0]), "section_id": str(r[1]), "content_snapshot": r[2] or {}, "word_count": r[3],
+            "created_at": r[4].isoformat() if hasattr(r[4], "isoformat") else str(r[4]), "created_by": r[5],
+        }
+
+    def list_section_versions(self, project_id, section_id):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT v.id, v.section_id, v.content_snapshot, v.word_count, v.created_at, v.created_by "
+                "FROM section_versions v JOIN sections s ON s.id = v.section_id "
+                "WHERE v.section_id = %s::uuid AND s.project_id = %s::uuid ORDER BY v.created_at DESC, v.id DESC",
+                (section_id, project_id),
+            ).fetchall()
+        return [self._version_row(r) for r in rows]
+
+    def get_section_version(self, project_id, section_id, version_id):
+        try:
+            uuid.UUID(version_id)
+        except ValueError:
+            return None
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT v.id, v.section_id, v.content_snapshot, v.word_count, v.created_at, v.created_by "
+                "FROM section_versions v JOIN sections s ON s.id = v.section_id "
+                "WHERE v.id = %s::uuid AND v.section_id = %s::uuid AND s.project_id = %s::uuid",
+                (version_id, section_id, project_id),
+            ).fetchone()
+        return self._version_row(r) if r else None
+
+    def add_node_feedback(self, project_id, node_key, advisor_email, advisor_name, content):
+        with self._conn() as c:
+            r = c.execute(
+                "INSERT INTO node_feedback (project_id, node_key, advisor_email, advisor_name, content) "
+                "VALUES (%s::uuid, %s, %s, %s, %s) "
+                "RETURNING id, project_id, node_key, advisor_email, advisor_name, content, created_at",
+                (project_id, node_key, advisor_email.strip().lower(), advisor_name, content),
+            ).fetchone()
+        return self._feedback_row(r)
+
+    @staticmethod
+    def _feedback_row(r) -> dict:
+        return {
+            "id": str(r[0]), "project_id": str(r[1]), "node_key": r[2], "advisor_email": r[3],
+            "advisor_name": r[4], "content": r[5],
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+        }
+
+    def list_node_feedback(self, project_id, node_key):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, project_id, node_key, advisor_email, advisor_name, content, created_at "
+                "FROM node_feedback WHERE project_id = %s::uuid AND node_key = %s ORDER BY created_at ASC, id",
+                (project_id, node_key),
+            ).fetchall()
+        return [self._feedback_row(r) for r in rows]
+
+    # ------------------------------------------------------------------ provenance ledger
+    @staticmethod
+    def _prov_row(r) -> dict:
+        return {"id": str(r[0]), "project_id": str(r[1]), "section_id": str(r[2]), "kind": r[3], "source": r[4],
+                "words": r[5], "text": r[6], "meta": r[7] or {}, "declared": r[8], "created_by": r[9],
+                "created_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10])}
+
+    _PROV_COLS = "id, project_id, section_id, kind, source, words, text, meta, declared, created_by, created_at"
+
+    def add_provenance_event(self, project_id, section_id, kind, source, words, text, meta, created_by):
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as c:
+            ok = c.execute("SELECT 1 FROM sections WHERE id = %s::uuid AND project_id = %s::uuid",
+                           (section_id, project_id)).fetchone()
+            if not ok:
+                raise ValueError("section not in project")
+            r = c.execute(
+                f"INSERT INTO provenance_events (project_id, section_id, kind, source, words, text, meta, created_by) "
+                f"VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s) RETURNING {self._PROV_COLS}",
+                (project_id, section_id, kind, source, words, text.replace("\x00", "") if text else text,
+                 Jsonb(meta or {}), created_by),
+            ).fetchone()
+        return self._prov_row(r)
+
+    def list_provenance_events(self, project_id, section_id=None):
+        with self._conn() as c:
+            if section_id is None:
+                rows = c.execute(f"SELECT {self._PROV_COLS} FROM provenance_events WHERE project_id = %s::uuid "
+                                 "ORDER BY created_at, id", (project_id,)).fetchall()
+            else:
+                rows = c.execute(f"SELECT {self._PROV_COLS} FROM provenance_events WHERE project_id = %s::uuid "
+                                 "AND section_id = %s::uuid ORDER BY created_at, id", (project_id, section_id)).fetchall()
+        return [self._prov_row(r) for r in rows]
+
+    def declare_provenance_event(self, project_id, event_id, declared):
+        try:
+            uuid.UUID(event_id)
+        except ValueError:
+            return None
+        with self._conn() as c:
+            r = c.execute(
+                f"UPDATE provenance_events SET declared = %s WHERE id = %s::uuid AND project_id = %s::uuid "
+                f"AND kind = 'paste' RETURNING {self._PROV_COLS}", (declared, event_id, project_id),
+            ).fetchone()
+        return self._prov_row(r) if r else None
+
+    # ------------------------------------------------------------------ local error log
+    def add_error_event(self, source, error_type, message, stack, route, request_id, user_id):
+        with self._conn() as c:
+            r = c.execute(
+                "INSERT INTO error_events (source, error_type, message, stack, route, request_id, user_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id, source, error_type, message, stack, route, request_id, user_id, created_at",
+                (source, error_type, message, stack, route, request_id, user_id),
+            ).fetchone()
+        return self._err_row(r)
+
+    @staticmethod
+    def _err_row(r) -> dict:
+        keys = ["id", "source", "error_type", "message", "stack", "route", "request_id", "user_id", "created_at"]
+        d = dict(zip(keys, r))
+        d["id"] = str(d["id"])
+        d["created_at"] = d["created_at"].isoformat()
+        return d
+
+    def list_error_events(self, limit=100):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, source, error_type, message, stack, route, request_id, user_id, created_at "
+                "FROM error_events ORDER BY created_at DESC LIMIT %s", (limit,)
+            ).fetchall()
+        return [self._err_row(r) for r in rows]
+
+    def purge_error_events(self, older_than_days):
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM error_events WHERE created_at < now() - make_interval(days => %s)",
+                            (older_than_days,))
+            return cur.rowcount
+
+    # ------------------------------------------------------------------ passage index
+    def replace_chunks(self, document_id, chunks):
+        with self._conn() as c:
+            row = c.execute("SELECT project_id FROM documents WHERE id = %s::uuid", (document_id,)).fetchone()
+            if not row:
+                return 0
+            c.execute("DELETE FROM chunks WHERE document_id = %s::uuid", (document_id,))
+            with c.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO chunks (document_id, project_id, chunk_no, page_no, text, search_text) "
+                    "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s)",
+                    [(document_id, row[0], k["chunk_no"], k["page_no"], k["text"].replace("\x00", ""),
+                      k["search_text"].replace("\x00", "")) for k in chunks],
+                )
+        return len(chunks)
+
+    def chunks_to_embed(self, document_id, model, limit):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, text FROM chunks WHERE document_id = %s::uuid AND embedding_model IS DISTINCT FROM %s "
+                "ORDER BY chunk_no LIMIT %s", (document_id, model, limit),
+            ).fetchall()
+        return [{"id": str(r[0]), "text": r[1]} for r in rows]
+
+    def save_embeddings(self, items, model):
+        if not items:
+            return
+        with self._conn() as c:
+            with c.cursor() as cur:
+                cur.executemany(
+                    "UPDATE chunks SET embedding = %s::real[], embedding_model = %s WHERE id = %s::uuid",
+                    [(list(vec), model, cid) for cid, vec in items],
+                )
+
+    def chunk_stats(self, project_id, model):
+        with self._conn() as c:
+            n, e = c.execute(
+                "SELECT count(*), count(*) FILTER (WHERE embedding_model = %s) FROM chunks WHERE project_id = %s::uuid",
+                (model, project_id),
+            ).fetchone()
+        return {"chunks": n, "embedded": e}
+
+    def _chunk_hits(self, c, scored: list[tuple[str, float]]) -> list[dict]:
+        if not scored:
+            return []
+        rows = c.execute(
+            "SELECT id, document_id, page_no, text FROM chunks WHERE id = ANY(%s::uuid[])", ([i for i, _ in scored],)
+        ).fetchall()
+        by_id = {str(r[0]): r for r in rows}
+        return [{"id": i, "document_id": str(by_id[i][1]), "page_no": by_id[i][2], "text": by_id[i][3], "score": s}
+                for i, s in scored if i in by_id]
+
+    def search_keyword(self, project_id, query, limit):
+        q = _search.tsquery(query)
+        if not q:
+            return []
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, ts_rank_cd(tsv, to_tsquery('simple', %s)) AS r FROM chunks "
+                "WHERE project_id = %s::uuid AND tsv @@ to_tsquery('simple', %s) ORDER BY r DESC, id LIMIT %s",
+                (q, project_id, q, limit),
+            ).fetchall()
+            return self._chunk_hits(c, [(str(r[0]), float(r[1])) for r in rows])
+
+    def search_vector(self, project_id, vector, model, limit):
+        import heapq
+
+        with self._conn() as c:
+            best = heapq.nlargest(
+                limit,
+                ((_search.cosine(vector, emb), str(cid)) for cid, emb in c.execute(
+                    "SELECT id, embedding FROM chunks WHERE project_id = %s::uuid AND embedding_model = %s "
+                    "AND embedding IS NOT NULL", (project_id, model))),
+            )
+            return self._chunk_hits(c, [(cid, s) for s, cid in best])
+
+    def get_section_comment(self, section_id, comment_id):
+        try:
+            uuid.UUID(comment_id)
+        except ValueError:
+            return None
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT id, section_id, author_email, author_name, content, resolved, created_at "
+                "FROM section_comments WHERE id = %s::uuid AND section_id = %s::uuid",
+                (comment_id, section_id),
+            ).fetchone()
+        if not r:
+            return None
+        return {
+            "id": str(r[0]), "section_id": str(r[1]), "author_email": str(r[2]), "author_name": r[3],
+            "content": str(r[4]), "resolved": bool(r[5]),
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+        }
+
+    def delete_document(self, project_id, document_id):
+        """Delete a document (claims, pages, jobs and edge evidence cascade). Returns the removed row."""
+        doc = self.get_document(document_id)
+        if not doc or doc["project_id"] != project_id:
+            return None
+        with self._conn() as c:
+            c.execute("DELETE FROM documents WHERE id = %s::uuid AND project_id = %s::uuid", (document_id, project_id))
+        return doc
 
     def get_beta_metrics(self) -> dict:
         with self._conn() as c:

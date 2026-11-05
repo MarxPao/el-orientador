@@ -22,17 +22,28 @@ services:
     build:
       context: .
       dockerfile: services/pipeline/Dockerfile
+      args:
+        LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
     container_name: orientador-pipeline
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${DB_USER:-orientador}:${DB_PASSWORD:-orientador_secret_pass_123}@postgres:5432/${DB_NAME:-orientador_db}
       JWT_SECRET: ${JWT_SECRET:-super-secret-key-with-minimum-32-characters-el-orientador}
       STORAGE_DIR: /app/storage
+      MAX_PDF_MB: ${MAX_PDF_MB:-}
       WEB_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-gemini-2.0-flash}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}   # vazio = padrão do provedor
       DEMO_SEED: ${DEMO_SEED:-0}
       ENV: production
+      JOB_WORKER: external   # documents are processed by the `worker` service below
+      AUTO_MIGRATE: "1"
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}   # who may read /admin/errors (empty = nobody)
+      ERROR_RETENTION_DAYS: ${ERROR_RETENTION_DAYS:-30}
     ports:
       - "8000:8000"
     volumes:
@@ -41,6 +52,34 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/pipeline/Dockerfile
+      args:
+        LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+    container_name: orientador-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-orientador}:${DB_PASSWORD:-orientador_secret_pass_123}@postgres:5432/${DB_NAME:-orientador_db}
+      STORAGE_DIR: /app/storage
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}   # vazio = padrão do provedor
+      AUTO_MIGRATE: "1"
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+    volumes:
+      - storage_data:/app/storage
+      - ./prompts:/prompts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true   # inherits the API's HTTP healthcheck from the image, which does not apply here
 
   web:
     build:
@@ -55,6 +94,27 @@ services:
       - "3000:3000"
     depends_on:
       - pipeline
+
+  # Local backup (database + PDFs + checksums) into ./backups. Not started by `up`; run on demand:
+  #   docker compose run --rm backup create
+  #   docker compose run --rm backup verify
+  #   docker compose run --rm backup restore /backups/<timestamp> --yes
+  backup:
+    image: pgvector/pgvector:pg16
+    profiles: ["tools"]
+    entrypoint: ["sh", "/scripts/backup.sh"]
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-orientador}:${DB_PASSWORD:-orientador_secret_pass_123}@postgres:5432/${DB_NAME:-orientador_db}
+      STORAGE_DIR: /app/storage
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - storage_data:/app/storage
+      - ./backups:/backups
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ─── Python API ───────────────────────────────────────────────────────────────
+  api:
+    name: API — testes, tipos e lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/pipeline
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: orientador_test
+          POSTGRES_USER: orientador
+          POSTGRES_PASSWORD: orientador
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://orientador:orientador@localhost:5432/orientador_test
+      STORAGE_DIR: /tmp/orientador_storage
+      AUTO_MIGRATE: "1"
+      MIGRATIONS_DIR: ${{ github.workspace }}/db
+      EMBED_PROVIDER: local
+      JWT_SECRET: ci_test_secret_32_characters_long
+      LOGIN_MAX_FAILS: "3"
+      LOGIN_LOCK_SECONDS: "10"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/pipeline/requirements*.txt
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt -r requirements-dev.txt 2>/dev/null || pip install -r requirements.txt
+
+      - name: Instalar ferramentas de qualidade
+        run: pip install ruff mypy pytest-cov
+
+      - name: Lint (ruff)
+        run: ruff check app/ tests/ --select E,W,F,I --ignore E501
+
+      - name: Tipos (mypy — erros críticos)
+        run: |
+          mypy app/ \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --no-error-summary \
+            --follow-imports=skip \
+            2>&1 | grep -v "^Found " | head -50 || true
+        continue-on-error: true  # removido quando o app tiver anotações completas
+
+      - name: Testes
+        run: pytest tests/ -x -q --tb=short --cov=app --cov-report=xml
+
+      - name: Upload cobertura
+        uses: codecov/codecov-action@v4
+        with:
+          files: services/pipeline/coverage.xml
+        continue-on-error: true  # não bloqueia o CI se codecov estiver indisponível
+
+  # ─── Contagem de linhas por arquivo de rota ───────────────────────────────────
+  route-size:
+    name: Tamanho dos módulos de rota (< 400 linhas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checar tamanho
+        run: |
+          set -e
+          failed=0
+          for f in services/pipeline/app/routers/*.py; do
+            lines=$(wc -l < "$f")
+            if [ "$lines" -gt 400 ]; then
+              echo "FALHOU: $f tem $lines linhas (limite 400)"
+              failed=1
+            else
+              echo "OK: $f ($lines linhas)"
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then exit 1; fi
+          echo "Todos os módulos dentro do limite."
+
+  # ─── Next.js web ──────────────────────────────────────────────────────────────
+  web:
+    name: Web — tipos e build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Verificar tipos (tsc)
+        run: npx tsc --noEmit
+        continue-on-error: true  # removido quando os tipos estiverem completos
+
+      - name: Lint
+        run: npx eslint src/ --max-warnings 50
+        continue-on-error: true
+
+      - name: Build de produção
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000

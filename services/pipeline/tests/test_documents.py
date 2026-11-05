@@ -128,3 +128,20 @@ def test_documents_are_scoped_to_project_owner(tmp_path):
     assert client.post(f"/projects/{pid}/documents/upload", headers=ho,
                        files={"file": ("a.pdf", PDF, "application/pdf")}).status_code == 404
     assert client.get(f"/projects/{pid}/documents").status_code == 401
+
+
+def test_upload_has_no_size_cap_by_default_and_MAX_PDF_MB_sets_one(tmp_path, monkeypatch):
+    big = PDF + b"0" * (3 * 1024 * 1024)  # larger than the cap set below
+    monkeypatch.delenv("MAX_PDF_MB", raising=False)
+    client, h, pid = make(tmp_path)
+    r = client.post(f"/projects/{pid}/documents/upload", headers=h, data={"title": "Livro inteiro"},
+                    files={"file": ("livro.pdf", big, "application/pdf")})
+    assert r.status_code == 201, r.text  # local app: no cap unless the owner asks for one
+    monkeypatch.setenv("MAX_PDF_MB", "2")
+    r = client.post(f"/projects/{pid}/documents/upload", headers=h, data={"title": "Outro livro"},
+                    files={"file": ("outro.pdf", big, "application/pdf")})
+    assert r.status_code == 413 and "2 MB" in r.json()["detail"]
+    monkeypatch.setenv("MAX_PDF_MB", "lixo")  # a malformed value never blocks uploads
+    r = client.post(f"/projects/{pid}/documents/upload", headers=h, data={"title": "Terceiro livro"},
+                    files={"file": ("terceiro.pdf", big, "application/pdf")})
+    assert r.status_code == 201, r.text

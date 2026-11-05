@@ -15,13 +15,17 @@ import {
   getToken,
   MapNode,
   Project,
+  ParaphraseSearchResponse,
+  ParaphraseSuggestion,
   ProjectAuthorshipResponse,
   ProjectClaim,
   Section,
   SectionComment,
+  SectionVersion,
+  listSectionVersions,
+  restoreSectionVersion,
   TextAnalysisWorkspace,
   TextCompareResult,
-  ValidateAuthenticityResponse,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app-header";
 import {
@@ -99,6 +103,17 @@ function getGradientZoneMeta(intensity: number): {
   };
 }
 
+const PROVENANCE_LABEL: Record<string, string> = {
+  ai_draft: "Rascunho gerado por IA",
+  ai_coauthor: "Coautoria com IA",
+  ai_polish: "Revisão leve por IA",
+  ai_paraphrase: "Reescrita de rascunho da IA (confirmada por você)",
+  paste: "Texto colado de fora",
+  paraphrase_dismissed: "Sugestão de reescrita dispensada por você",
+};
+
+const MIN_PASTE_WORDS = 15;
+
 const DEFAULT_PRISM: AuthorshipPrism = {
   total_words: 0,
   human_words: 0,
@@ -140,12 +155,14 @@ export default function EditorView({ id }: { id: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
+  const selectedSectionIdRef = useRef<string | null>(null);
+  selectedSectionIdRef.current = selectedSectionId;
   const [coherence, setCoherence] = useState<CoherenceWarning[]>([]);
   const [concepts, setConcepts] = useState<MapNode[]>([]);
   const [claims, setClaims] = useState<ProjectClaim[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
-  const [activeTab, setActiveTab] = useState<"analysis" | "coherence" | "evidence" | "comments">("analysis");
+  const [activeTab, setActiveTab] = useState<"analysis" | "coherence" | "evidence" | "comments" | "versions">("analysis");
   const [analysisSubTab, setAnalysisSubTab] = useState<"dissect" | "compare" | "boxcar">("dissect");
   const [textAnalysis, setTextAnalysis] = useState<TextAnalysisWorkspace | null>(null);
   const [selectedDocGuideId, setSelectedDocGuideId] = useState<string>("");
@@ -158,6 +175,9 @@ export default function EditorView({ id }: { id: string }) {
   const [newTitle, setNewTitle] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [comments, setComments] = useState<SectionComment[]>([]);
+  const [versions, setVersions] = useState<SectionVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [newComment, setNewComment] = useState("");
   const [anchorQuote, setAnchorQuote] = useState<string | null>(null);
   const [showCitePicker, setShowCitePicker] = useState(false);
@@ -168,12 +188,16 @@ export default function EditorView({ id }: { id: string }) {
   const [autonomyIntensity, setAutonomyIntensity] = useState<number>(0);
   const [prism, setPrism] = useState<AuthorshipPrism>(DEFAULT_PRISM);
   const [sectionPrisms, setSectionPrisms] = useState<Record<string, AuthorshipPrism>>({});
-  const [showForensicPanel, setShowForensicPanel] = useState<boolean>(false);
-  const [validatingForensics, setValidatingForensics] = useState<boolean>(false);
+  const [showLedger, setShowLedger] = useState<boolean>(false);
+  const [declaringEvent, setDeclaringEvent] = useState<string | null>(null);
+  const [paraphrases, setParaphrases] = useState<ParaphraseSearchResponse | null>(null);
+  const [searchingParaphrases, setSearchingParaphrases] = useState(false);
+  const [dismissedParaphrases, setDismissedParaphrases] = useState<string[]>([]);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [omitDeclaration, setOmitDeclaration] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const activeZone = useMemo(
     () => getGradientZoneMeta(autonomyIntensity),
@@ -213,6 +237,22 @@ export default function EditorView({ id }: { id: string }) {
   }, [id]);
 
   // Tiptap Editor initialization (Source Serif 4, corpo 18-20px, entrelinha ~1.58)
+  /** Text that came from outside the editor (paste or drop): the ledger records it; the insertion is never blocked. */
+  function recordOutsideText(text: string) {
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    const sid = selectedSectionIdRef.current;
+    if (words < MIN_PASTE_WORDS || !sid) return;
+    void api(`/projects/${id}/sections/${sid}/provenance/paste`, { method: "POST", body: { text } })
+      .then(() => api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`))
+      .then((all) => {
+        setPrism(all.project);
+        setSectionPrisms(all.sections);
+      })
+      .catch(() => {
+        /* o registro é melhor-esforço */
+      });
+  }
+
   const editor = useEditor({
     extensions: [StarterKit],
     immediatelyRender: false,
@@ -220,6 +260,20 @@ export default function EditorView({ id }: { id: string }) {
       attributes: {
         class:
           "min-h-[480px] w-full p-6 sm:p-8 font-serif-academic text-[19px] leading-[1.58] text-ink focus:outline-none",
+      },
+      handlePaste: (_view, event) => {
+        // colagens internas (copiadas do próprio editor) carregam data-pm-slice e não são texto de fora
+        const html = event.clipboardData?.getData("text/html") ?? "";
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        if (!html.includes("data-pm-slice")) recordOutsideText(text);
+        return false;
+      },
+      handleDrop: (_view, event) => {
+        // texto arrastado de outra janela entra sem passar pelo teclado nem pela colagem: também é registrado
+        const html = event.dataTransfer?.getData("text/html") ?? "";
+        const text = event.dataTransfer?.getData("text/plain") ?? "";
+        if (!html.includes("data-pm-slice")) recordOutsideText(text);
+        return false;
       },
     },
     onUpdate: ({ editor: ed }) => {
@@ -507,9 +561,22 @@ export default function EditorView({ id }: { id: string }) {
     }
   }
 
-  async function handleExport() {
+  // Suggestions the author has not answered yet: the export stops once to say so (the document states it either way).
+  const [pendingReview, setPendingReview] = useState<{ total: number; sections: { section_id: string; title: string | null; count: number }[] } | null>(null);
+
+  async function handleExport(force = false) {
     setIsExporting(true);
     try {
+      if (!force) {
+        const pend = await api<{ available: boolean; total: number; sections: { section_id: string; title: string | null; count: number }[] }>(
+          `/projects/${id}/provenance/pending`
+        ).catch(() => null);
+        if (pend && pend.available && pend.total > 0) {
+          setPendingReview({ total: pend.total, sections: pend.sections });
+          return;
+        }
+      }
+      setPendingReview(null);
       const canOmit = !prism.requires_disclosure && omitDeclaration;
       await downloadDocx(id, `${project?.title || "trabalho"}.docx`, canOmit);
     } catch (err) {
@@ -565,7 +632,9 @@ export default function EditorView({ id }: { id: string }) {
       }));
       setAiInstruction("");
       setNotice(
-        res.mode === "polish"
+        res.notice
+          ? res.notice
+          : res.mode === "polish"
           ? `Trecho revisado na intensidade ${res.intensity}% (registrado na faixa de revisão leve do Prisma).`
           : res.mode === "coauthor"
           ? `Co-escrita híbrida (${res.intensity}%) concluída com citação verificada.`
@@ -579,42 +648,85 @@ export default function EditorView({ id }: { id: string }) {
     }
   }
 
-  async function handleValidateAuthenticity(syncPrism: boolean = false) {
+  async function handleDeclarePaste(eventId: string, declared: "own_text" | null) {
     if (!activeSection) return;
-    setValidatingForensics(true);
+    setDeclaringEvent(eventId);
     setError(null);
     try {
-      const res = await api<ValidateAuthenticityResponse>(
-        `/projects/${id}/sections/${activeSection.id}/validate-authenticity`,
-        {
-          method: "POST",
-          body: { sync_prism: syncPrism },
-        }
+      const secPrism = await api<AuthorshipPrism>(
+        `/projects/${id}/sections/${activeSection.id}/provenance/events/${eventId}/declare`,
+        { method: "POST", body: { declared } }
       );
-      setPrism(res.project_authorship);
-      setSectionPrisms((prev) => ({
-        ...prev,
-        [activeSection.id]: res.section_authorship,
-      }));
-      setShowForensicPanel(true);
-      if (syncPrism) {
-        setNotice(
-          "Prisma de Autoria sincronizado com a validação estilométrica real do texto da seção."
-        );
-      }
+      setSectionPrisms((prev) => ({ ...prev, [activeSection.id]: secPrism }));
+      const all = await api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`);
+      setPrism(all.project);
+      setSectionPrisms(all.sections);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Erro ao validar autenticidade do texto."
-      );
+      setError(err instanceof Error ? err.message : "Erro ao registrar a declaração.");
     } finally {
-      setValidatingForensics(false);
+      setDeclaringEvent(null);
+    }
+  }
+
+  useEffect(() => {
+    setParaphrases(null); // suggestions belong to the section they were found in
+    setDismissedParaphrases([]);
+  }, [selectedSectionId]);
+
+  async function handleFindParaphrases() {
+    if (!activeSection) return;
+    setSearchingParaphrases(true);
+    setError(null);
+    try {
+      const res = await api<ParaphraseSearchResponse>(
+        `/projects/${id}/sections/${activeSection.id}/provenance/paraphrases`,
+        { method: "POST" }
+      );
+      setParaphrases(res);
+      setDismissedParaphrases([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao comparar o texto com os rascunhos da IA.");
+    } finally {
+      setSearchingParaphrases(false);
+    }
+  }
+
+  async function handleConfirmParaphrase(s: ParaphraseSuggestion) {
+    if (!activeSection) return;
+    setError(null);
+    try {
+      await api(`/projects/${id}/sections/${activeSection.id}/provenance/paraphrases/confirm`, {
+        method: "POST",
+        body: { text: s.text, event_id: s.event_id },
+      });
+      const all = await api<ProjectAuthorshipResponse>(`/projects/${id}/authorship`);
+      setPrism(all.project);
+      setSectionPrisms(all.sections);
+      setParaphrases((prev) =>
+        prev ? { ...prev, suggestions: prev.suggestions.filter((x) => x.text !== s.text) } : prev
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao registrar a confirmação.");
+    }
+  }
+
+  async function handleDismissParaphrase(s: ParaphraseSuggestion) {
+    if (!activeSection) return;
+    setError(null);
+    try {
+      await api(`/projects/${id}/sections/${activeSection.id}/provenance/paraphrases/dismiss`, {
+        method: "POST",
+        body: { text: s.text },
+      });
+      setDismissedParaphrases((prev) => [...prev, s.text]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao registrar a revisão.");
     }
   }
 
   const activeSectionPrism = activeSection
     ? sectionPrisms[activeSection.id] ?? prism
     : prism;
-  const activeForensics = activeSectionPrism.forensics;
 
   const activeDocGuide = useMemo(() => {
     if (!textAnalysis || textAnalysis.document_guides.length === 0) return null;
@@ -658,6 +770,7 @@ export default function EditorView({ id }: { id: string }) {
       );
       setCompareResult(res);
       setPrism(res.project_authorship);
+      if (res.notice) setNotice(res.notice);
       if (insertIntoSection && res.updated_section) {
         const upSec = res.updated_section;
         setSections((prev) => prev.map((s) => (s.id === upSec.id ? upSec : s)));
@@ -665,7 +778,9 @@ export default function EditorView({ id }: { id: string }) {
           editor.commands.setContent(upSec.content, { emitUpdate: false });
         }
         setNotice(
-          res.mode_used === "scaffold_socratico"
+          res.notice
+            ? `${res.notice} O esqueleto foi inserido na seção atual.`
+            : res.mode_used === "scaffold_socratico"
             ? "Esqueleto analítico socrático com as duas citações verificadas inserido na seção atual!"
             : "Parágrafo dialético comparando os dois autores inserido na seção e registrado no Prisma!"
         );
@@ -711,7 +826,7 @@ export default function EditorView({ id }: { id: string }) {
               type="button"
               variant="primary"
               disabled={isExporting}
-              onClick={handleExport}
+              onClick={() => void handleExport()}
             >
               {isExporting ? "Gerando Word…" : "Exportar DOCX (ABNT)"}
             </Button>
@@ -720,8 +835,35 @@ export default function EditorView({ id }: { id: string }) {
 
         {error && <AlertBanner variant="error">{error}</AlertBanner>}
         {notice && <AlertBanner variant="notice">{notice}</AlertBanner>}
+        {pendingReview && (
+          <div role="alert" className="rounded-[12px] border border-orange bg-skipped-bg/60 p-4 space-y-3">
+            <p className="text-[15px] font-semibold text-ink">
+              {pendingReview.total} trecho(s) parecem reescrita de rascunhos da IA e ainda não foram revisados por você.
+            </p>
+            <p className="text-[14px] text-locked">
+              Em: {pendingReview.sections.map((s) => `${s.title ?? "seção"} (${s.count})`).join(", ")}. Enquanto não forem
+              revisados, não contam como revisão de IA no Prisma; o documento exportado informa isso na declaração.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => {
+                  setSelectedSectionId(pendingReview.sections[0].section_id);
+                  setShowLedger(true);
+                  setPendingReview(null);
+                }}
+              >
+                Revisar agora
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => void handleExport(true)}>
+                Exportar mesmo assim
+              </Button>
+            </div>
+          </div>
+        )}
 
-        {/* Gradiente Contínuo de Autonomia (0–100%) + Prisma de Autoria + Validador Forense de IA */}
+        {/* Gradiente Contínuo de Autonomia (0–100%) + Prisma de Autoria */}
         <section
           aria-label="Gradiente de autonomia da IA e Validador de Autoria"
           className="space-y-4"
@@ -816,7 +958,7 @@ export default function EditorView({ id }: { id: string }) {
                       key={preset.val}
                       type="button"
                       onClick={() => handleIntensityChange(preset.val)}
-                      className={`rounded-[6px] border px-2 py-1 text-[12px] font-bold transition cursor-pointer ${
+                      className={`min-h-[44px] rounded-[6px] border px-3 py-1 text-[12px] font-bold transition cursor-pointer ${
                         autonomyIntensity === preset.val
                           ? "border-purple bg-purple text-paper"
                           : "border-borda bg-superficie text-ink hover:bg-paper"
@@ -829,200 +971,147 @@ export default function EditorView({ id }: { id: string }) {
               </div>
             </div>
 
-            {/* Prisma de Autoria + Botão de Validação Forense (5 cols) */}
+            {/* Prisma de Autoria + Registro de autoria (5 cols) */}
             <div className="lg:col-span-5 flex flex-col justify-between gap-2.5">
               <AuthorshipPrismBar prism={prism} />
 
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-borda bg-superficie px-3.5 py-2.5">
                 <div className="text-[13px] text-ink">
-                  <strong>Detector Forense de Autoria:</strong> verifica burstiness, entropia e clichês de LLM no texto real.
+                  <strong>Registro de autoria:</strong> mostra o que a IA inseriu e o que foi colado nesta seção. Não analisa estilo.
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={validatingForensics || !activeSection}
-                    onClick={() => void handleValidateAuthenticity(false)}
-                    className="rounded-[8px] border border-purple bg-skipped-bg/60 px-3 py-1.5 text-[13px] font-bold text-purple hover:bg-purple hover:text-paper transition cursor-pointer"
-                  >
-                    {validatingForensics
-                      ? "Auditando texto…"
-                      : showForensicPanel
-                      ? "Atualizar Raio-X Forense"
-                      : "Validar se é de IA de fato (Raio-X)"}
-                  </button>
-                  {showForensicPanel && (
-                    <button
-                      type="button"
-                      onClick={() => setShowForensicPanel(false)}
-                      className="text-[13px] font-bold text-locked hover:text-ink px-1.5 cursor-pointer"
-                    >
-                      Ocultar
-                    </button>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  disabled={!activeSection}
+                  onClick={() => setShowLedger((v) => !v)}
+                  className="rounded-[8px] border border-purple bg-skipped-bg/60 px-3 py-1.5 text-[13px] font-bold text-purple hover:bg-purple hover:text-paper transition cursor-pointer"
+                >
+                  {showLedger ? "Ocultar registro" : "Ver registro desta seção"}
+                </button>
               </div>
             </div>
           </div>
 
-          {/* Painel de Validação Forense e Raio-X Sentença por Sentença */}
-          {showForensicPanel && activeForensics && (
+          {/* Registro de proveniência da seção ativa */}
+          {showLedger && (
             <div
-              aria-label="Resultado da validação forense de autoria"
-              className="rounded-[14px] border-2 border-purple bg-superficie p-5 space-y-4"
+              aria-label="Registro de autoria da seção"
+              className="rounded-[14px] border-2 border-purple bg-superficie p-5 space-y-3"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-borda pb-3">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <h2 className="font-display text-lg text-ink">
-                      Validador Forense de Autoria Real · {activeSection?.title}
-                    </h2>
-                    <span
-                      className={`rounded-[6px] px-2.5 py-0.5 text-[12px] font-bold uppercase ${
-                        activeForensics.verdict_code === "ai_dominant"
-                          ? "bg-orange text-ink"
-                          : activeForensics.verdict_code === "hybrid"
-                          ? "bg-purple text-paper"
-                          : "bg-done text-paper"
-                      }`}
+              <h2 className="font-display text-lg text-ink">
+                Registro de autoria · {activeSection?.title}
+              </h2>
+              {(activeSectionPrism.events ?? []).length === 0 ? (
+                <p className="text-[14px] text-locked">
+                  Nada registrado: nenhum texto de IA foi inserido e nenhuma colagem foi informada nesta seção.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {(activeSectionPrism.events ?? []).map((ev) => (
+                    <li
+                      key={ev.id ?? `${ev.kind}-${ev.created_at}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-borda bg-paper/40 p-3 text-[14px] text-ink"
                     >
-                      {activeForensics.verdict_label}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-[13px] text-locked">
-                    Análise estilométrica determinística (variação sintática de frases, entropia vocabular, marcadores típicos de LLM e ancoragem empírica).
-                  </p>
-                </div>
+                      <span>
+                        <strong>{PROVENANCE_LABEL[ev.kind] ?? ev.kind}</strong> · {ev.words} palavras
+                        {ev.created_at ? ` · ${new Date(ev.created_at).toLocaleString("pt-BR")}` : ""}
+                        {ev.declared === "own_text" ? " · declarado como texto do autor" : ""}
+                      </span>
+                      {ev.kind === "paste" && ev.id && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={declaringEvent === ev.id}
+                          onClick={() => void handleDeclarePaste(ev.id as string, ev.declared ? null : "own_text")}
+                        >
+                          {ev.declared ? "Desfazer declaração" : "Este texto é meu"}
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-[12px] leading-snug text-locked">
+                “Este texto é meu” fica registrado como declaração sua, não como verificação.
+              </p>
 
-                <div className="flex flex-wrap items-center gap-2">
+              <div className="space-y-2 border-t border-borda pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[14px] text-ink">
+                    <strong>Reescritas de rascunhos da IA:</strong> compara seus parágrafos, pelo significado, com os
+                    rascunhos que a IA gerou aqui.
+                  </div>
                   <Button
                     type="button"
                     variant="secondary"
-                    disabled={validatingForensics}
-                    onClick={() => void handleValidateAuthenticity(true)}
+                    disabled={searchingParaphrases || !activeSection}
+                    onClick={() => void handleFindParaphrases()}
                   >
-                    Sincronizar Prisma com Validação Real
+                    {searchingParaphrases ? "Comparando…" : "Procurar trechos parecidos"}
                   </Button>
                 </div>
-              </div>
-
-              {/* 4 Cartões de Métricas Estilométricas */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
-                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
-                    Assinatura Estilométrica IA
-                  </div>
-                  <div className="mt-1 text-2xl font-bold text-ink">
-                    {activeForensics.measured_ai_score}%
-                  </div>
-                  <div className="text-[12px] text-locked">
-                    {100 - activeForensics.measured_ai_score}% naturalidade humana
-                  </div>
-                </div>
-
-                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
-                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
-                    Burstiness Sintática (CV)
-                  </div>
-                  <div className="mt-1 text-2xl font-bold text-ink">
-                    {activeForensics.burstiness_score}/100
-                  </div>
-                  <div className="text-[12px] text-locked">
-                    CV = {activeForensics.burstiness_cv} (humanos variam frases; IA é monótona)
-                  </div>
-                </div>
-
-                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
-                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
-                    Entropia Lexical (TTR)
-                  </div>
-                  <div className="mt-1 text-2xl font-bold text-ink">
-                    {activeForensics.lexical_diversity_score}/100
-                  </div>
-                  <div className="text-[12px] text-locked">
-                    Riqueza de vocabulário não repetitivo
-                  </div>
-                </div>
-
-                <div className="rounded-[10px] border border-borda bg-paper/60 p-3">
-                  <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
-                    Clichês de LLM Detectados
-                  </div>
-                  <div className="mt-1 text-2xl font-bold text-ink">
-                    {activeForensics.llm_markers_found.length}
-                  </div>
-                  <div className="text-[12px] text-locked truncate">
-                    {activeForensics.llm_markers_found.length > 0
-                      ? activeForensics.llm_markers_found.map((m) => `“${m}”`).join(", ")
-                      : "Nenhum vício generativo detectado"}
-                  </div>
-                </div>
-              </div>
-
-              {/* Raio-X Sentença por Sentença no Gradiente */}
-              <div className="space-y-2">
-                <div className="text-[13px] font-bold uppercase tracking-wider text-locked">
-                  Raio-X Sentença por Sentença ({activeForensics.sentences.length} períodos analisados)
-                </div>
-
-                {activeForensics.sentences.length === 0 ? (
-                  <p className="text-[14px] text-locked">
-                    Escreva pelo menos uma frase completa na seção para visualizar o mapa de calor por sentença.
-                  </p>
-                ) : (
-                  <div className="max-h-[260px] overflow-y-auto space-y-2 pr-1">
-                    {activeForensics.sentences.map((sent) => {
-                      const badgeStyle =
-                        sent.classification === "ai_pattern"
-                          ? "bg-orange text-ink"
-                          : sent.classification === "hybrid"
-                          ? "bg-purple text-paper"
-                          : "bg-done text-paper";
-                      const badgeLabel =
-                        sent.classification === "ai_pattern"
-                          ? `${sent.ai_probability}% Padrão IA`
-                          : sent.classification === "hybrid"
-                          ? `${sent.ai_probability}% Híbrida / Polida`
-                          : `${100 - sent.ai_probability}% Humana Autêntica`;
-
-                      return (
-                        <div
-                          key={sent.index}
-                          className="rounded-[10px] border border-borda bg-paper/40 p-3 space-y-1.5"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span
-                              className={`inline-flex items-center rounded-[6px] px-2 py-0.5 text-[12px] font-bold ${badgeStyle}`}
-                            >
-                              {badgeLabel}
-                            </span>
-                            <span className="text-[12px] text-locked">
-                              {sent.word_count} palavras ·{" "}
-                              {sent.reasons.join(" · ")}
-                            </span>
-                          </div>
-                          <p className="font-serif-academic text-[15px] leading-snug text-ink">
-                            {sent.classification === "ai_pattern" ? (
-                              <mark className="mark-orange">{sent.text}</mark>
-                            ) : (
-                              sent.text
-                            )}
-                          </p>
-                        </div>
-                      );
-                    })}
-                  </div>
+                {paraphrases && !paraphrases.available && (
+                  <p role="status" className="text-[13px] text-locked">{paraphrases.notice}</p>
+                )}
+                {paraphrases?.available && (
+                  <>
+                    {paraphrases.suggestions.filter((s) => !dismissedParaphrases.includes(s.text)).length === 0 ? (
+                      <p role="status" className="text-[13px] text-locked">
+                        Nenhum parágrafo seu parece reescrita de um rascunho da IA registrado.
+                      </p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {paraphrases.suggestions
+                          .filter((s) => !dismissedParaphrases.includes(s.text))
+                          .map((s) => (
+                            <li key={s.text} className="space-y-2 rounded-[10px] border border-borda bg-paper/40 p-3 text-[14px] text-ink">
+                              <p className="font-serif-academic leading-snug">{s.text}</p>
+                              <p className="text-[12px] text-locked">
+                                Parecido com o rascunho da IA: “{s.ai_excerpt}…” (semelhança {Math.round(s.similarity * 100)}%)
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                <Button type="button" variant="secondary" onClick={() => void handleConfirmParaphrase(s)}>
+                                  Parte do rascunho da IA
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  onClick={() => void handleDismissParaphrase(s)}
+                                >
+                                  É texto meu
+                                </Button>
+                              </div>
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                    {paraphrases.limits && (
+                      <p className="text-[12px] leading-snug text-locked">{paraphrases.limits.join(" ")}</p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
           )}
         </section>
 
+        {/* Mobile: toggle sumário de seções */}
+        <button
+          type="button"
+          onClick={() => setSidebarOpen((v) => !v)}
+          className="lg:hidden flex items-center justify-between w-full rounded-[12px] border border-borda bg-superficie px-4 py-3 text-[15px] font-medium text-ink"
+        >
+          <span>Sumário de seções ({sections.length})</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" className={`h-5 w-5 text-locked transition-transform ${sidebarOpen ? "rotate-180" : ""}`}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+
         {/* Layout de 3 colunas */}
         <div className="grid flex-1 grid-cols-1 gap-6 lg:grid-cols-12 items-start">
           {/* Coluna Esquerda: Sumário de Seções (3 cols) */}
           <aside
             aria-label="Árvore de seções"
-            className="rounded-[16px] border border-borda bg-superficie p-5 lg:col-span-3 flex flex-col gap-4"
+            className={`rounded-[16px] border border-borda bg-superficie p-5 lg:col-span-3 flex-col gap-4 ${sidebarOpen ? "flex" : "hidden"} lg:flex`}
           >
             <div className="flex items-center justify-between border-b border-borda pb-3">
               <h2 className="font-display text-lg text-ink">Sumário de seções</h2>
@@ -1085,6 +1174,7 @@ export default function EditorView({ id }: { id: string }) {
                 type="text"
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
+                aria-label="Título da nova seção"
                 placeholder="Nova seção (ex: 3.1 Hipóteses)"
                 className="w-full h-[44px] rounded-[10px] border border-borda bg-paper/40 px-3 text-[15px] text-ink focus:border-purple"
               />
@@ -1132,7 +1222,7 @@ export default function EditorView({ id }: { id: string }) {
                 <button
                   type="button"
                   onClick={() => editor?.chain().focus().toggleBold().run()}
-                  className={`min-h-[40px] rounded-[8px] px-2.5 font-bold cursor-pointer ${
+                  className={`min-h-[44px] min-w-[44px] rounded-[8px] px-2.5 font-bold cursor-pointer ${
                     editor?.isActive("bold")
                       ? "bg-purple text-paper"
                       : "text-ink hover:bg-paper"
@@ -1143,7 +1233,7 @@ export default function EditorView({ id }: { id: string }) {
                 <button
                   type="button"
                   onClick={() => editor?.chain().focus().toggleItalic().run()}
-                  className={`min-h-[40px] rounded-[8px] px-2.5 italic cursor-pointer ${
+                  className={`min-h-[44px] min-w-[44px] rounded-[8px] px-2.5 italic cursor-pointer ${
                     editor?.isActive("italic")
                       ? "bg-purple text-paper"
                       : "text-ink hover:bg-paper"
@@ -1371,6 +1461,23 @@ export default function EditorView({ id }: { id: string }) {
                 }`}
               >
                 Comentários ({comments.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("versions");
+                  if (selectedSectionId) {
+                    setVersionsLoading(true);
+                    listSectionVersions(id, selectedSectionId).then(setVersions).catch(() => {}).finally(() => setVersionsLoading(false));
+                  }
+                }}
+                className={`min-h-[44px] px-2.5 font-bold transition cursor-pointer border-b-2 ${
+                  activeTab === "versions"
+                    ? "border-purple text-purple"
+                    : "border-transparent text-locked hover:text-ink"
+                }`}
+              >
+                Versões
               </button>
             </div>
 
@@ -1676,317 +1783,276 @@ export default function EditorView({ id }: { id: string }) {
                             {compareResult.comparison_matrix.convergence}
                           </div>
                           <div className="rounded-[8px] border border-borda bg-superficie p-2.5">
-                            <strong className="text-purple">Diferença de papel / escopo:</strong>{" "}
+                            <strong className="text-ink">Onde divergem / limite:</strong>{" "}
                             {compareResult.comparison_matrix.difference}
+                          </div>
+                          <div className="rounded-[8px] border border-borda bg-superficie p-2.5">
+                            <strong className="text-purple">Pergunta socrática:</strong>{" "}
+                            {compareResult.comparison_matrix.guiding_question}
                           </div>
                         </div>
 
-                        <AdvisorBubble label="Pergunta para guiar sua síntese">
-                          <p className="text-[13px]">
-                            {compareResult.comparison_matrix.guiding_question}
-                          </p>
-                        </AdvisorBubble>
-
-                        <div className="rounded-[8px] border border-borda bg-superficie p-3 space-y-2">
-                          <span className="text-[11px] font-bold uppercase tracking-wider text-locked">
-                            {compareResult.mode_used === "scaffold_socratico"
-                              ? "Esqueleto com Conectivos + Citações Verificadas (para você completar)"
-                              : "Parágrafo Comparativo Costurado com Citações Verificadas"}
-                          </span>
-                          <p className="font-serif-academic text-[14px] leading-relaxed text-ink">
-                            {compareResult.synthesis_text}
-                          </p>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={comparingBusy || !activeSection}
-                            onClick={() => void handleCompareTexts(true)}
-                            className="w-full"
-                          >
-                            Inserir esta conexão na seção “{activeSection?.title ?? "atual"}”
-                          </Button>
-                        </div>
+                        {compareResult.synthesis_text && (
+                          <div className="space-y-2">
+                            <span className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                              Parágrafo Dialético Gerado (modo {compareResult.mode_used === "scaffold_socratico" ? "esqueleto" : "síntese"})
+                            </span>
+                            <blockquote className="font-serif-academic text-[14px] leading-relaxed text-ink rounded-[10px] border border-purple bg-paper/50 p-3">
+                              {compareResult.synthesis_text}
+                            </blockquote>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={comparingBusy || !activeSection}
+                              onClick={() => void handleCompareTexts(true)}
+                              className="w-full"
+                            >
+                              Inserir parágrafo na seção atual
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* SUB-ABA 3: Auditor de "Efeito Vagão de Trem" no Capítulo */}
+                {/* SUB-ABA 3: Vagão de Trem (Roadmap Socrático de Argumentação) */}
                 {analysisSubTab === "boxcar" && (
                   <div className="space-y-3">
-                    <div className="rounded-[10px] border border-borda bg-paper/60 p-3 space-y-1">
-                      <span className="text-[12px] font-bold uppercase tracking-wider text-purple">
-                        Auditoria de Integração Analítica · {activeSection?.title}
-                      </span>
-                      <p className="text-[13px] text-locked">
-                        Evite o “fichamento em vagão de trem” (parágrafos que citam apenas 1 autor solto sem diálogo nem análise crítica).
-                      </p>
-                    </div>
-
-                    {!activeSectionAudit || activeSectionAudit.paragraphs.length === 0 ? (
-                      <p className="text-[13px] text-locked">
-                        Escreva ao menos um parágrafo nesta seção para auditar a integração entre autores.
+                    {!textAnalysis?.manuscript_audit ? (
+                      <p className="text-[14px] text-locked">
+                        Nenhuma auditoria do manuscrito disponível ainda. Adicione fontes e seções para gerar o Vagão de Trem.
                       </p>
                     ) : (
-                      <div className="space-y-2.5">
-                        <div className="flex items-center justify-between text-[12px] font-bold">
-                          <span className="text-done">
-                            {activeSectionAudit.integrated_count} integrado(s)
-                          </span>
-                          <span className="text-ink">
-                            {activeSectionAudit.boxcar_count} em alerta “vagão de trem”
-                          </span>
-                        </div>
+                      <>
+                        <AdvisorBubble label="Vagão de Trem · Roadmap do Manuscrito">
+                          <p className="text-[13px]">
+                            {textAnalysis.manuscript_audit.total_integrated_paragraphs === 0 &&
+                            textAnalysis.manuscript_audit.total_boxcar_paragraphs === 0
+                              ? "Escreva parágrafos com citações (Autor, Ano, p. X) para ver aqui se eles dialogam com mais de uma fonte."
+                              : `${textAnalysis.manuscript_audit.total_integrated_paragraphs} parágrafo(s) articulam as fontes com análise própria; ${textAnalysis.manuscript_audit.total_boxcar_paragraphs} citam uma fonte isolada (efeito vagão de trem).`}
+                          </p>
+                        </AdvisorBubble>
 
-                        {activeSectionAudit.paragraphs.map((pa) => (
-                          <div
-                            key={pa.index}
-                            className="rounded-[10px] border border-borda bg-superficie p-3 space-y-1.5"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span
-                                className={`rounded-[6px] px-2 py-0.5 text-[11px] font-bold uppercase ${
-                                  pa.status_code === "analise_integrada"
-                                    ? "bg-done text-paper"
-                                    : pa.status_code === "vagao_de_trem"
-                                    ? "bg-orange text-ink"
-                                    : "bg-paper text-locked border border-borda"
-                                }`}
-                              >
-                                §{pa.index} · {pa.status_label}
-                              </span>
-                              <span className="text-[11px] font-bold text-locked">
-                                {pa.citation_count} citação(ões)
-                              </span>
+                        {activeSectionAudit ? (
+                          <div className="space-y-2">
+                            <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                              Seção atual: {activeSection?.title}
                             </div>
-
-                            <p className="font-serif-academic text-[13px] text-ink">
-                              “{pa.excerpt}”
-                            </p>
-                            <p className="text-[12px] text-locked">{pa.feedback}</p>
-
-                            {pa.status_code === "vagao_de_trem" && (
-                              <button
-                                type="button"
-                                onClick={() => setAnalysisSubTab("compare")}
-                                className="text-[12px] font-bold text-purple underline cursor-pointer"
-                              >
-                                Conectar com outro autor na Mesa A × B →
-                              </button>
-                            )}
+                            <div className="rounded-[10px] border border-borda bg-superficie p-3 space-y-2">
+                              <div className="text-[13px] text-ink">
+                                {activeSectionAudit.paragraph_count} parágrafo(s) · {activeSectionAudit.integrated_count} com síntese entre fontes · {activeSectionAudit.boxcar_count} com fonte isolada
+                              </div>
+                              {activeSectionAudit.paragraphs.length === 0 ? (
+                                <p className="text-[13px] text-locked">
+                                  Esta seção ainda não tem parágrafos para analisar.
+                                </p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {activeSectionAudit.paragraphs.map((para) => (
+                                    <div
+                                      key={para.index}
+                                      className="rounded-[8px] border border-borda bg-paper/60 p-2 text-[12px] space-y-1"
+                                    >
+                                      <span
+                                        className={`inline-block rounded-[6px] px-2 py-0.5 text-[11px] font-bold uppercase ${
+                                          para.status_code === "analise_integrada"
+                                            ? "bg-done text-paper"
+                                            : para.status_code === "vagao_de_trem"
+                                            ? "bg-orange text-ink"
+                                            : "border border-borda text-locked"
+                                        }`}
+                                      >
+                                        {para.status_label}
+                                      </span>
+                                      <div className="text-locked italic">“{para.excerpt}”</div>
+                                      <div className="text-ink">{para.feedback}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        ) : (
+                          <p className="text-[14px] text-locked">
+                            Selecione uma seção para ver sua análise no Vagão de Trem.
+                          </p>
+                        )}
+
+                        <div className="space-y-2">
+                          <div className="text-[12px] font-bold uppercase tracking-wider text-locked">
+                            Todas as seções
+                          </div>
+                          {textAnalysis.manuscript_audit.sections.map((sa) => {
+                            const sec = sections.find((s) => s.id === sa.section_id);
+                            return (
+                              <div
+                                key={sa.section_id}
+                                onClick={() => setSelectedSectionId(sa.section_id)}
+                                className="flex items-center gap-3 rounded-[10px] border border-borda bg-superficie p-2.5 cursor-pointer hover:bg-paper/60"
+                              >
+                                <div
+                                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                    sa.paragraph_count === 0
+                                      ? "bg-locked"
+                                      : sa.boxcar_count > 0
+                                      ? "bg-orange"
+                                      : sa.integrated_count > 0
+                                      ? "bg-done"
+                                      : "bg-borda"
+                                  }`}
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[13px] font-bold text-ink truncate">
+                                    {sec?.title ?? sa.section_title}
+                                  </div>
+                                  <div className="text-[12px] text-locked">
+                                    {sa.paragraph_count} parágrafo(s) · {sa.integrated_count} integrado(s) · {sa.boxcar_count} vagão
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Aba: Coerência */}
+            {/* Aba: Alertas de Coerência */}
             {activeTab === "coherence" && (
-              <div className="space-y-3 text-[15px]">
+              <div className="space-y-3 text-[14px] max-h-[640px] overflow-y-auto pr-1">
                 {coherence.length === 0 ? (
-                  <div className="flex items-start gap-3 rounded-[12px] border border-done bg-paper/40 p-4 text-ink">
-                    <CheckIcon className="mt-0.5 h-5 w-5 shrink-0 text-done" />
-                    <span>
-                      Nenhum aviso de coerência identificado. Estrutura acadêmica consistente.
+                  <div className="flex items-center gap-2 rounded-[10px] border border-done bg-paper/50 p-3">
+                    <CheckIcon className="h-4 w-4 text-done" />
+                    <span className="text-[14px] font-medium text-ink">
+                      Nenhum alerta de coerência. Projeto coeso!
                     </span>
                   </div>
                 ) : (
-                  coherence.map((warn, i) => (
+                  coherence.map((w, idx) => (
                     <div
-                      key={i}
-                      className={`rounded-[12px] p-4 space-y-2 ${
-                        warn.severity === "warning"
-                          ? "border-2 border-dotted border-purple bg-paper/50 text-ink"
-                          : "border border-borda bg-paper/30 text-ink"
-                      }`}
+                      key={idx}
+                      className="rounded-[10px] border border-borda bg-superficie p-3 space-y-1"
                     >
-                      <div className="flex items-center gap-2">
-                        <AlertIcon className="h-4 w-4 shrink-0 text-purple" />
-                        <span className="text-[13px] font-bold uppercase tracking-wider text-purple">
-                          {COHERENCE_WARNING_LABELS[warn.type] ??
-                            warn.type.replace(/_/g, " ").toUpperCase()}
-                        </span>
-                      </div>
-                      <p className="text-[15px] leading-relaxed text-ink">{warn.message}</p>
+                      <span className="inline-block rounded-[6px] bg-orange px-2 py-0.5 text-[11px] font-bold uppercase text-ink">
+                        {COHERENCE_WARNING_LABELS[w.type] ?? w.type}
+                      </span>
+                      <p className="text-[14px] text-ink">{w.message}</p>
                     </div>
                   ))
                 )}
               </div>
             )}
 
-            {/* Aba: Conceitos / Evidências com trechos literais */}
+            {/* Aba: Conceitos Vinculados */}
             {activeTab === "evidence" && (
-              <div className="space-y-3 text-[15px] max-h-[520px] overflow-y-auto pr-1">
-                <p className="text-[14px] text-locked">
-                  Conceitos do mapa e seus trechos literais verificados para a seção{" "}
-                  <strong>{activeSection?.title ?? "ativa"}</strong>:
-                </p>
-                {concepts.map((concept) => {
-                  const isLinked = activeSection?.concept_ids.includes(concept.id) ?? false;
-                  const conceptClaims = claims.filter((c) =>
-                    c.concepts.some((co) => co.id === concept.id)
-                  );
-                  return (
-                    <div
-                      key={concept.id}
-                      className={`rounded-[12px] p-3.5 transition border space-y-2.5 ${
-                        isLinked
-                          ? "border-2 border-purple bg-paper/60 text-ink"
-                          : "border-borda bg-superficie text-ink"
-                      }`}
-                    >
-                      <label className="flex min-h-[36px] items-center justify-between cursor-pointer">
-                        <div className="flex items-center gap-2.5 truncate">
-                          <input
-                            type="checkbox"
-                            checked={isLinked}
-                            onChange={() => void toggleConceptLink(concept.id)}
-                            className="h-4 w-4 accent-purple"
-                          />
-                          <span className="font-bold truncate">{concept.label}</span>
-                        </div>
-                        <span className="text-[13px] font-medium text-locked shrink-0">
-                          {concept.n_claims} citação(ões)
-                        </span>
-                      </label>
-
-                      {conceptClaims.length > 0 && (
-                        <div className="space-y-2 border-t border-borda pt-2.5">
-                          {conceptClaims.map((cl) => (
-                            <div
-                              key={cl.id}
-                              className="rounded-[8px] border border-borda bg-superficie p-2.5 space-y-1.5"
-                            >
-                              <blockquote className="font-serif-academic text-[14px] leading-snug text-ink">
-                                <mark className="mark-orange">{cl.quote}</mark>
-                              </blockquote>
-                              <div className="flex items-center justify-between gap-2 text-[13px]">
-                                <span className="text-locked truncate">
-                                  {cl.document_title ?? "Documento"} · p. {cl.page_no}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleInsertClaimCitation(cl)}
-                                  className="shrink-0 font-bold text-purple underline cursor-pointer"
-                                >
-                                  Citar no texto
-                                </button>
-                              </div>
+              <div className="space-y-2 text-[14px] max-h-[640px] overflow-y-auto pr-1">
+                {concepts.length === 0 ? (
+                  <p className="text-[14px] text-locked">
+                    Nenhum conceito no mapa. Acesse o Mapa de Conhecimento para criar nós conceituais.
+                  </p>
+                ) : (
+                  concepts.map((c) => {
+                    const isLinked = activeSection?.concept_ids.includes(c.id) ?? false;
+                    return (
+                      <div
+                        key={c.id}
+                        className={`flex items-center justify-between rounded-[10px] border p-3 cursor-pointer transition ${
+                          isLinked
+                            ? "border-purple bg-skipped-bg/60"
+                            : "border-borda bg-superficie hover:bg-paper/60"
+                        }`}
+                        onClick={() => void toggleConceptLink(c.id)}
+                      >
+                        <div>
+                          <div className="text-[14px] font-bold text-ink">{c.label}</div>
+                          {c.summary && (
+                            <div className="text-[12px] text-locked mt-0.5 line-clamp-2">
+                              {c.summary}
                             </div>
-                          ))}
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                        {isLinked && (
+                          <CheckIcon className="h-5 w-5 shrink-0 text-purple" />
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             )}
 
-            {/* Aba: Comentários (Orientador em balão roxo, Aluno em cartão branco, com trecho ancorado em laranja) */}
+            {/* Aba: Comentários & Perguntas do Orientador */}
             {activeTab === "comments" && (
-              <div className="flex flex-col justify-between gap-4 text-[15px]">
-                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                  {comments.length === 0 ? (
-                    <p className="text-[15px] text-locked italic">
-                      Nenhum comentário nesta seção. Orientadores e alunos podem registrar observações aqui.
-                    </p>
-                  ) : (
-                    comments.map((comment, idx) => {
-                      const isAdvisor =
-                        advisors.some((a) => a.advisor_email === comment.author_email) ||
-                        idx === 0;
-                      const authorLabel = isAdvisor
-                        ? `Orientador · ${comment.author_name || comment.author_email}`
-                        : `Aluno · ${comment.author_name || comment.author_email}`;
-                      const parsed = parseAnchoredComment(comment.content);
+              <div className="space-y-4 text-[14px] max-h-[640px] overflow-y-auto pr-1">
+                {comments.length === 0 && (
+                  <p className="text-[14px] text-locked">
+                    Nenhum comentário nesta seção ainda.
+                  </p>
+                )}
 
-                      return (
-                        <div
-                          key={comment.id}
-                          className={comment.resolved ? "opacity-65" : ""}
-                        >
-                          {parsed.anchor && (
-                            <div className="mb-1.5 rounded-t-[10px] border border-b-0 border-borda bg-paper px-3 py-2 text-[14px]">
-                              <span className="block text-[12px] font-bold uppercase tracking-wider text-locked">
-                                Trecho em trabalho:
-                              </span>
-                              <mark className="mark-orange font-serif-academic text-[15px]">
-                                “{parsed.anchor}”
-                              </mark>
-                            </div>
-                          )}
-
-                          {isAdvisor ? (
-                            <AdvisorBubble label={authorLabel}>
-                              <p className="whitespace-pre-wrap">{parsed.body}</p>
-                              <div className="mt-2 flex items-center justify-between text-[13px] text-paper/85">
-                                <span>{comment.resolved ? "Resolvido" : "Em aberto"}</span>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void toggleCommentResolved(comment.id, comment.resolved)
-                                  }
-                                  className="underline cursor-pointer"
-                                >
-                                  {comment.resolved ? "Reabrir" : "Marcar como resolvido"}
-                                </button>
-                              </div>
-                            </AdvisorBubble>
-                          ) : (
-                            <StudentCard label={authorLabel}>
-                              <p className="whitespace-pre-wrap">{parsed.body}</p>
-                              <div className="mt-2 flex items-center justify-between text-[13px] text-locked">
-                                <span>{comment.resolved ? "Resolvido" : "Em aberto"}</span>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void toggleCommentResolved(comment.id, comment.resolved)
-                                  }
-                                  className="text-purple underline cursor-pointer"
-                                >
-                                  {comment.resolved ? "Reabrir" : "Marcar como resolvido"}
-                                </button>
-                              </div>
-                            </StudentCard>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-
-                {/* Formulário de novo comentário */}
-                <form
-                  onSubmit={handleAddComment}
-                  className="border-t border-borda pt-4 flex flex-col gap-3"
-                >
-                  {anchorQuote && (
-                    <div className="flex items-start justify-between gap-2 rounded-[10px] border border-borda bg-paper p-2.5 text-[14px]">
-                      <div>
-                        <span className="block text-[12px] font-bold uppercase tracking-wider text-locked">
-                          Ancorado no trecho:
+                {comments.map((c) => {
+                  const { anchor, body } = parseAnchoredComment(c.content);
+                  return (
+                    <div
+                      key={c.id}
+                      className={`rounded-[10px] border p-3 space-y-2 ${
+                        c.resolved
+                          ? "border-done bg-paper/30 opacity-70"
+                          : "border-borda bg-superficie"
+                      }`}
+                    >
+                      {anchor && (
+                        <blockquote className="rounded-[6px] bg-orange/20 px-2.5 py-1.5 font-serif-academic text-[13px] italic text-ink border-l-2 border-orange">
+                          "{anchor}"
+                        </blockquote>
+                      )}
+                      <p className="text-[14px] text-ink whitespace-pre-wrap">{body}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[12px] text-locked">
+                          {new Date(c.created_at).toLocaleDateString("pt-BR")}
+                          {c.author_name ? ` · ${c.author_name}` : ""}
                         </span>
-                        <mark className="mark-orange font-serif-academic">“{anchorQuote}”</mark>
+                        <button
+                          type="button"
+                          onClick={() => void toggleCommentResolved(c.id, c.resolved)}
+                          className={`rounded-[6px] px-2 py-0.5 text-[12px] font-bold cursor-pointer transition ${
+                            c.resolved
+                              ? "bg-paper text-locked hover:text-ink"
+                              : "bg-done text-paper hover:opacity-80"
+                          }`}
+                        >
+                          {c.resolved ? "Reabrir" : "Resolver ✓"}
+                        </button>
                       </div>
+                    </div>
+                  );
+                })}
+
+                <form onSubmit={handleAddComment} className="space-y-2.5 border-t border-borda pt-3">
+                  {anchorQuote && (
+                    <div className="flex items-start gap-2 rounded-[10px] bg-orange/20 px-3 py-2">
+                      <blockquote className="flex-1 font-serif-academic text-[13px] italic text-ink truncate">
+                        "{anchorQuote}"
+                      </blockquote>
                       <button
                         type="button"
                         onClick={() => setAnchorQuote(null)}
-                        className="text-[13px] font-bold text-locked hover:text-ink cursor-pointer"
+                        className="text-[13px] font-bold text-locked hover:text-ink cursor-pointer shrink-0"
                       >
                         ✕
                       </button>
                     </div>
                   )}
-
                   <textarea
-                    rows={2}
+                    rows={3}
                     value={newComment}
                     onChange={(e) => setNewComment(e.target.value)}
-                    placeholder="Escreva uma resposta ou observação nesta seção…"
-                    className="w-full resize-none rounded-[10px] border border-borda bg-paper/40 p-3 text-[15px] text-ink focus:border-purple"
+                    placeholder="Escreva um comentário, pergunta socrática ou sugestão para esta seção…"
+                    className="w-full rounded-[10px] border border-borda bg-superficie p-3 text-[14px] text-ink"
                   />
                   <Button
                     type="submit"
@@ -1999,73 +2065,103 @@ export default function EditorView({ id }: { id: string }) {
                 </form>
               </div>
             )}
+
+            {/* Aba: Versões da Seção */}
+            {activeTab === "versions" && (
+              <div className="space-y-3 text-[14px] max-h-[640px] overflow-y-auto pr-1">
+                {versionsLoading ? (
+                  <p className="text-[14px] text-locked">Carregando versões…</p>
+                ) : versions.length === 0 ? (
+                  <p className="text-[14px] text-locked">Nenhuma versão salva para esta seção.</p>
+                ) : (
+                  versions.map((v) => (
+                    <div
+                      key={v.id}
+                      className="rounded-[10px] border border-borda bg-superficie p-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[13px] font-bold text-ink">
+                            {new Date(v.created_at).toLocaleString("pt-BR")}
+                          </div>
+                          <div className="text-[12px] text-locked">
+                            {v.word_count} palavras · {v.change_summary ?? "Versão salva"}
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={restoringVersionId === v.id}
+                          onClick={async () => {
+                            if (!selectedSectionId) return;
+                            setRestoringVersionId(v.id);
+                            try {
+                              const restored = await restoreSectionVersion(id, selectedSectionId, v.id);
+                              setSections((prev) => prev.map((s) => (s.id === restored.id ? restored : s)));
+                              if (editor && restored.content) {
+                                editor.commands.setContent(restored.content, { emitUpdate: false });
+                              }
+                              setNotice(`Versão de ${new Date(v.created_at).toLocaleString("pt-BR")} restaurada com sucesso.`);
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : "Erro ao restaurar versão.");
+                            } finally {
+                              setRestoringVersionId(null);
+                            }
+                          }}
+                        >
+                          {restoringVersionId === v.id ? "Restaurando…" : "Restaurar"}
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </aside>
         </div>
 
-        {/* Modal de Convite ao Orientador */}
+        {/* Modal: Convidar Orientador */}
         {showInviteModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4">
-            <div
-              role="dialog"
-              aria-modal="true"
-              className="w-full max-w-md rounded-[16px] border border-borda bg-paper p-6 shadow-lg space-y-4"
-            >
-              <div className="flex items-center justify-between border-b border-borda pb-3">
-                <h3 className="font-display text-xl text-ink">Orientadores do projeto</h3>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
+            <div className="w-full max-w-md rounded-[20px] border border-borda bg-paper p-6 shadow-2xl space-y-5">
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-xl text-ink">Convidar Orientador</h2>
                 <button
                   type="button"
                   onClick={() => setShowInviteModal(false)}
-                  aria-label="Fechar"
-                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[10px] text-ink hover:bg-borda/40 cursor-pointer"
+                  className="text-locked hover:text-ink text-xl font-bold cursor-pointer"
                 >
                   ✕
                 </button>
               </div>
 
-              {advisors.length > 0 && (
-                <div className="space-y-2 text-[15px]">
-                  <span className="text-[13px] font-bold uppercase tracking-wider text-locked">
-                    Orientadores convidados:
-                  </span>
-                  <ul className="divide-y divide-borda rounded-[10px] border border-borda bg-superficie">
-                    {advisors.map((adv) => (
-                      <li
-                        key={adv.advisor_email}
-                        className="flex items-center justify-between p-3 text-[15px]"
-                      >
-                        <span className="font-medium text-ink">{adv.advisor_email}</span>
-                        <span className="text-[13px] text-locked">Comenta no texto</span>
-                      </li>
-                    ))}
-                  </ul>
+              <div className="space-y-2">
+                <div className="text-[13px] font-bold uppercase tracking-wider text-locked">
+                  Orientadores atuais ({advisors.length})
                 </div>
-              )}
+                {advisors.length === 0 ? (
+                  <p className="text-[14px] text-locked">Nenhum orientador convidado ainda.</p>
+                ) : (
+                  advisors.map((a) => (
+                    <StudentCard key={a.advisor_email} label="Orientador">
+                      {a.advisor_email}
+                    </StudentCard>
+                  ))
+                )}
+              </div>
 
-              <form onSubmit={handleInviteAdvisor} className="space-y-3 pt-2">
-                <label className="block text-[15px] font-medium text-ink">
-                  Convidar novo orientador por e-mail
-                  <input
-                    type="email"
-                    required
-                    value={advisorEmail}
-                    onChange={(e) => setAdvisorEmail(e.target.value)}
-                    placeholder="orientador@universidade.br"
-                    className="mt-1.5 w-full h-[46px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink"
-                  />
-                </label>
-
-                <Button
-                  type="submit"
-                  variant="secondary"
-                  disabled={!advisorEmail.trim()}
-                  className="w-full"
-                >
-                  Convidar orientador
+              <form onSubmit={handleInviteAdvisor} className="space-y-3">
+                <input
+                  type="email"
+                  value={advisorEmail}
+                  onChange={(e) => setAdvisorEmail(e.target.value)}
+                  placeholder="E-mail do orientador…"
+                  required
+                  className="w-full h-[44px] rounded-[10px] border border-borda bg-superficie px-3.5 text-[15px] text-ink focus:border-purple"
+                />
+                <Button type="submit" variant="primary" disabled={!advisorEmail.trim()} className="w-full">
+                  Enviar convite
                 </Button>
-
-                <p className="text-[14px] text-locked leading-relaxed">
-                  O orientador terá acesso à árvore de progresso, mapa de conhecimento, relatórios e poderá comentar nas seções do manuscrito.
-                </p>
               </form>
             </div>
           </div>

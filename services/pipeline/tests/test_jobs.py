@@ -138,3 +138,26 @@ def test_claims_endpoint_is_scoped_to_owner(tmp_path):
     doc_id = upload(client, h, pid, tmp_path)
     other = client.post("/auth/register", json={"email": "b@exemplo.com", "password": "senha-segura-1"}).json()["token"]
     assert client.get(f"/projects/{pid}/documents/{doc_id}/claims", headers={"Authorization": f"Bearer {other}"}).status_code == 404
+
+
+def test_untitled_upload_gets_title_authors_and_year_from_the_pdf(tmp_path):
+    path = tmp_path / "ref1.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Capital humano e crescimento no Brasil", fontsize=20)
+    page.insert_text((72, 140), "Maria da Silva", fontsize=12)
+    page.insert_textbox(pymupdf.Rect(72, 200, 540, 780), "Resumo. Publicado em 2019. " + BODY, fontsize=10)
+    doc.save(path)
+    repo, client, h, pid = setup(tmp_path, FakeLLM({"claims": []}))
+    r = client.post(f"/projects/{pid}/documents/upload", headers=h,
+                    files={"file": ("ref1.pdf", path.read_bytes(), "application/pdf")})
+    assert r.status_code == 201
+    d = repo.get_document(r.json()["id"])
+    assert d["title"] == "Capital humano e crescimento no Brasil" and d["authors"] == ["Maria da Silva"]
+    assert d["year"] == 2019 and d["metadata_source"] == "pdf"
+
+
+def test_a_title_typed_by_the_student_is_never_replaced(tmp_path):
+    repo, client, h, pid = setup(tmp_path, FakeLLM({"claims": []}))
+    doc_id = upload(client, h, pid, tmp_path)  # helper sends title="Artigo"
+    assert repo.get_document(doc_id)["title"] == "Artigo"
