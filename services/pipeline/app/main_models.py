@@ -206,6 +206,37 @@ class SharedCommentIn(BaseModel):
     anchor_quote: str | None = Field(default=None, max_length=500)
 
 
+class BetaFeedbackIn(BaseModel):
+    project_id: str | None = None
+    overall_rating: int = Field(ge=1, le=5)
+    socratic_gate_helpful: int = Field(ge=1, le=5)
+    evidence_trust: int = Field(ge=1, le=5)
+    relief_level: int = Field(ge=1, le=5)
+    pricing_preference: str = Field(min_length=2, max_length=50)
+    brand_impression: str = Field(min_length=2, max_length=100)
+    comments: str | None = Field(default=None, max_length=2000)
+
+
+class RepositoryImportIn(BaseModel):
+    source_id: str | None = None
+    repository: str = Field(pattern="^(scielo|bdtd|openalex|crossref|outro)$")
+    title: str = Field(min_length=1, max_length=500)
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = Field(default=None, ge=1800, le=2100)
+    venue: str | None = Field(default=None, max_length=255)
+    doi: str | None = Field(default=None, max_length=255)
+    pdf_url: str | None = Field(default=None, max_length=1000)
+    fetch_pdf: bool = False
+
+
+class BancaSessionCreateIn(BaseModel):
+    examiner_profile: str = Field(default="estrito", pattern="^(estrito|construtivo)$")
+
+
+class BancaTurnIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=10000)
+
+
 # ---------------------------------------------------------------------------
 # Rate-limit de login (estado em memória, por processo)
 # ---------------------------------------------------------------------------

@@ -301,3 +301,33 @@ CREATE TABLE IF NOT EXISTS error_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS error_events_created_idx ON error_events (created_at DESC);
+
+-- Migration 008: student beta feedback (T6.5). Tracks pilot satisfaction, socratic gate rating, evidence trust, relief and pricing preference.
+CREATE TABLE IF NOT EXISTS beta_feedback (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id uuid REFERENCES projects(id) ON DELETE SET NULL,
+  overall_rating int NOT NULL CHECK (overall_rating BETWEEN 1 AND 5),
+  socratic_gate_helpful int NOT NULL CHECK (socratic_gate_helpful BETWEEN 1 AND 5),
+  evidence_trust int NOT NULL CHECK (evidence_trust BETWEEN 1 AND 5),
+  relief_level int NOT NULL CHECK (relief_level BETWEEN 1 AND 5),
+  pricing_preference text NOT NULL,
+  brand_impression text NOT NULL,
+  comments text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_beta_feedback_user ON beta_feedback(user_id);
+
+-- Migration 009: academic defense simulator (T7.2). Tracks interactive defense committee simulation sessions, turns and verdicts.
+CREATE TABLE IF NOT EXISTS banca_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  examiner_profile text NOT NULL CHECK (examiner_profile IN ('estrito', 'construtivo')),
+  status text NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed')),
+  turns jsonb NOT NULL DEFAULT '[]',
+  final_report jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_banca_sessions_project ON banca_sessions(project_id, created_at DESC);
+

@@ -15,21 +15,28 @@ from .repo import Repo
 
 
 def extract_plain_text(content: Any) -> str:
-    """Extract plain text from Tiptap JSON or string content."""
+    """Extract plain text from Tiptap JSON or string content, preserving paragraph boundaries with newlines."""
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
-        text_parts: list[str] = []
-
-        def recurse(node: dict):
+        def block_text(node: dict) -> str:
+            parts: list[str] = []
             if node.get("type") == "text" and "text" in node:
-                text_parts.append(str(node["text"]))
+                parts.append(str(node["text"]))
             for child in node.get("content", []):
                 if isinstance(child, dict):
-                    recurse(child)
+                    parts.append(block_text(child))
+            return "".join(parts)
 
-        recurse(content)
-        return " ".join(text_parts)
+        if content.get("type") == "doc":
+            blocks: list[str] = []
+            for child in content.get("content", []):
+                if isinstance(child, dict):
+                    t = block_text(child).strip()
+                    if t:
+                        blocks.append(t)
+            return "\n\n".join(blocks)
+        return block_text(content).strip()
     return ""
 
 

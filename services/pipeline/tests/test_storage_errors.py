@@ -58,7 +58,10 @@ def test_symlink_pointing_outside_is_refused(tmp_path):
     root.mkdir()
     outside = tmp_path / "segredo.txt"
     outside.write_text("x")
-    (root / "link.pdf").symlink_to(outside)
+    try:
+        (root / "link.pdf").symlink_to(outside)
+    except OSError:
+        pytest.skip("Symlink creation requires administrator privileges on Windows")
     with pytest.raises(storage.StorageError):
         storage.resolve(root, "link.pdf")
     assert outside.exists()

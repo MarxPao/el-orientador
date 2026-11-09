@@ -21,7 +21,7 @@ from ..security import (
     verify_password,
 )
 from ._ctx import AppCtx
-from ..main_models import LoginIn, RegisterIn
+from ..main_models import BetaFeedbackIn, LoginIn, RegisterIn
 
 
 def register_routes(app: FastAPI, ctx: AppCtx) -> None:  # noqa: C901
@@ -107,6 +107,22 @@ def register_routes(app: FastAPI, ctx: AppCtx) -> None:  # noqa: C901
     @app.get("/beta-metrics")
     def beta_metrics(user: dict = Depends(_current_user)):
         return ctx.repo.get_beta_metrics()
+
+    @app.post("/beta/feedback", status_code=status.HTTP_201_CREATED)
+    def submit_beta_feedback(
+        body: BetaFeedbackIn,
+        user: dict = Depends(_current_user),
+    ):
+        """Student beta feedback for T6.5 evaluation."""
+        feedback = ctx.repo.add_beta_feedback(user["id"], body.model_dump())
+        return {"feedback": feedback}
+
+    @app.get("/beta/feedback")
+    def list_beta_feedback(
+        user: dict = Depends(_current_user),
+    ):
+        """List beta feedback for telemetry."""
+        return {"feedback": ctx.repo.list_beta_feedback()}
 
     # ── auth ──────────────────────────────────────────────────────────
 

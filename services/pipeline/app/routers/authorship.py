@@ -21,7 +21,7 @@ from ..main_models import (
 )
 
 MIN_PASTE_WORDS = 15
-DISMISSED_KIND = "dismissed_paraphrase"
+DISMISSED_KIND = "paraphrase_dismissed"
 
 
 def _section_blocks(content: dict | None) -> list[str]:

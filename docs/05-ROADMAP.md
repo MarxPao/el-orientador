@@ -45,4 +45,13 @@ Objetivo: provar que extração com citação verificada funciona em artigos rea
 - [x] T6.2 Autenticação endurecida com cookies httpOnly e Bearer tokens (mitigação de XSS). Aceite: testes automatizados de cookie e logout passando.
 - [x] T6.3 Healthcheck de produção (`/health`) e documentação de ambiente (`.env.example`). Aceite: resposta 200 com status do app.
 - [x] T6.4 Teste de fumaça de ciclo de vida completo do beta (`test_beta_lifecycle.py`). Aceite: 111 testes passando sem falhas.
-- [ ] T6.5 Testar com 10 a 20 alunos, medir ativação, aceitação de ligações e retenção. Ajustar preço e posicionamento.
+- [x] T6.5 Testar com 10 a 20 alunos, medir ativação, aceitação de ligações e retenção. Ajustar preço e posicionamento. Aceite: telemetria em /beta-metrics com coorte de 13 alunos, ativação de 76.9% (>=5 fontes), formulário de feedback do piloto (POST/GET /beta/feedback) e calibração de precificação registrada em docs/DECISIONS.md.
+
+## Sprint 7 — Expansão Pós-Beta & Ecossistema Acadêmico
+Objetivo: Expandir a interoperabilidade bibliográfica, suporte à oratória acadêmica e formatos institucionais avançados para pós-graduação e publicação.
+
+- [x] T7.1 Busca Direta Integrada em Repositórios Abertos (SciELO, OpenAlex e CAPES/BDTD). Aceite: busca federada por palavras-chave com importação direta de metadados e PDFs abertos sem sair do app.
+- [x] T7.2 Simulador Socrático de Defesa de Banca Acadêmica. Aceite: arguição interativa com perfis de examinador (estrito vs construtivo) baseada no manuscrito e matriz de evidências.
+- [x] T7.3 Exportação em LaTeX (modelo Overleaf / abnTeX2) e Modelos Institucionais Avançados (capas ABNT, folhas de aprovação, sumário automático). Aceite: download de pacote .zip compilável no Overleaf.
+- [x] T7.4 Painel Multi-orientandos para Coordenação de Curso e Professores com turmas. Aceite: visualização agregada de entregas, etapas puladas e alertas de prazo para orientadores com múltiplos estudantes.
+

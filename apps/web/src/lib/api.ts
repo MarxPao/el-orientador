@@ -381,6 +381,31 @@ export async function downloadDocx(
   URL.revokeObjectURL(url);
 }
 
+export async function downloadLatexPackage(
+  projectId: string,
+  defaultFilename: string = "trabalho_latex_overleaf.zip",
+  options?: { includeApproval?: boolean; includeAiDeclaration?: boolean }
+): Promise<void> {
+  const token = getToken();
+  const params = new URLSearchParams();
+  if (options?.includeApproval === false) params.set("include_approval", "false");
+  if (options?.includeAiDeclaration === false) params.set("include_ai_declaration", "false");
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_URL}/projects/${projectId}/export/latex${qs}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, "Erro ao exportar pacote LaTeX para Overleaf.");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = defaultFilename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export type AdvisorMember = {
   project_id: string;
   advisor_email: string;
@@ -885,3 +910,366 @@ export type Capabilities = {
     summaries?: "ai" | "unavailable";
   };
 };
+
+// ── Beta feedback & metrics ───────────────────────────────────────────────────
+
+export type BetaFeedback = {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  overall_rating: number;
+  socratic_gate_helpful: number;
+  evidence_trust: number;
+  relief_level: number;
+  pricing_preference: string;
+  brand_impression: string;
+  comments: string | null;
+  created_at: string;
+};
+
+export type BetaMetrics = {
+  students_registered: number;
+  projects_total: number;
+  projects_by_work: Record<string, number>;
+  activation: {
+    threshold_sources: number;
+    activated_projects: number;
+    activation_rate: number;
+  };
+  knowledge_map: {
+    total_edges: number;
+    total_decisions: number;
+    confirmed: number;
+    rejected: number;
+    acceptance_rate: number;
+    target_acceptance_rate: number;
+  };
+  socratic_gate: {
+    total_attempts: number;
+    passed: number;
+    skipped_with_warning: number;
+  };
+  feedback?: {
+    total_responses: number;
+    average_overall_rating: number;
+    average_socratic_gate_helpful: number;
+    average_evidence_trust: number;
+    average_relief_level: number;
+    pricing_preferences: Record<string, number>;
+    recent_brand_impressions: string[];
+  };
+  pricing_validation: {
+    hypothesis_a: string;
+    hypothesis_b: string;
+    cohort_target: string;
+  };
+};
+
+export async function submitBetaFeedback(data: {
+  project_id?: string;
+  overall_rating: number;
+  socratic_gate_helpful: number;
+  evidence_trust: number;
+  relief_level: number;
+  pricing_preference: string;
+  brand_impression: string;
+  comments?: string;
+}): Promise<{ feedback: BetaFeedback }> {
+  return api<{ feedback: BetaFeedback }>("/beta/feedback", {
+    method: "POST",
+    body: data,
+  });
+}
+
+export async function getBetaMetrics(): Promise<BetaMetrics> {
+  return api<BetaMetrics>("/beta-metrics");
+}
+
+// ── Federated repository search (T7.1) ───────────────────────────────────────
+
+export type RepositoryItem = {
+  id: string;
+  source: "scielo" | "bdtd" | "openalex" | string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  abstract: string | null;
+  citation_count: number;
+  is_open_access: boolean;
+  pdf_url: string | null;
+  landing_page_url: string | null;
+};
+
+export type RepositorySearchResponse = {
+  source: string;
+  query: string;
+  total: number;
+  results: RepositoryItem[];
+  status: string;
+  sources_searched?: string[];
+};
+
+export async function searchRepositories(params: {
+  q: string;
+  source?: "all" | "scielo" | "bdtd" | "openalex";
+  oa_only?: boolean;
+  limit?: number;
+}): Promise<RepositorySearchResponse> {
+  const sp = new URLSearchParams();
+  sp.set("q", params.q);
+  if (params.source) sp.set("source", params.source);
+  if (params.oa_only !== undefined) sp.set("oa_only", String(params.oa_only));
+  if (params.limit) sp.set("limit", String(params.limit));
+  return api<RepositorySearchResponse>(`/repositories/search?${sp.toString()}`);
+}
+
+export async function importFromRepository(
+  projectId: string,
+  item: {
+    source_id?: string;
+    repository: string;
+    title: string;
+    authors: string[];
+    year?: number | null;
+    venue?: string | null;
+    doi?: string | null;
+    pdf_url?: string | null;
+    fetch_pdf?: boolean;
+  }
+): Promise<{ document: Document; warning?: string | null; downloaded: boolean }> {
+  return api<{ document: Document; warning?: string | null; downloaded: boolean }>(
+    `/projects/${projectId}/documents/import-repository`,
+    {
+      method: "POST",
+      body: item,
+    }
+  );
+}
+
+// ── Academic defense simulator (T7.2) ───────────────────────────────────────
+
+export type BancaTurn = {
+  turn_no: number;
+  speaker: "examiner" | "student";
+  content: string;
+  focus_area?: string;
+  rubric_scores?: {
+    dominio_conteudo: number;
+    fundamentacao_evidencias: number;
+    coerencia_metodologica: number;
+    postura_argumentativa: number;
+  };
+  feedback?: string;
+  created_at: string;
+};
+
+export type BancaFinalReport = {
+  verdict: "apto_com_louvor" | "apto_com_ressalvas" | "recomenda_revisao" | string;
+  verdict_title: string;
+  overall_score: number;
+  strengths: string[];
+  vulnerabilities: string[];
+  recommendations: string[];
+  examiner_profile?: string;
+  prompt_version?: string | null;
+};
+
+export type BancaSession = {
+  id: string;
+  project_id: string;
+  examiner_profile: "estrito" | "construtivo" | string;
+  status: "in_progress" | "completed" | string;
+  turns: BancaTurn[];
+  final_report: BancaFinalReport | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BancaContextSummary = {
+  sections_count: number;
+  claims_count: number;
+  research_problem: string;
+};
+
+export async function createBancaSession(
+  projectId: string,
+  examinerProfile: "estrito" | "construtivo" = "estrito"
+): Promise<{ session: BancaSession; context_summary: BancaContextSummary }> {
+  return api<{ session: BancaSession; context_summary: BancaContextSummary }>(
+    `/projects/${projectId}/banca/sessions`,
+    {
+      method: "POST",
+      body: { examiner_profile: examinerProfile },
+    }
+  );
+}
+
+export async function listBancaSessions(
+  projectId: string
+): Promise<{ sessions: BancaSession[] }> {
+  return api<{ sessions: BancaSession[] }>(`/projects/${projectId}/banca/sessions`);
+}
+
+export async function getBancaSession(
+  projectId: string,
+  sessionId: string
+): Promise<{ session: BancaSession; context_summary: BancaContextSummary }> {
+  return api<{ session: BancaSession; context_summary: BancaContextSummary }>(
+    `/projects/${projectId}/banca/sessions/${sessionId}`
+  );
+}
+
+export async function submitBancaTurn(
+  projectId: string,
+  sessionId: string,
+  answer: string
+): Promise<{
+  session: BancaSession;
+  latest_evaluation: {
+    rubric_scores: {
+      dominio_conteudo: number;
+      fundamentacao_evidencias: number;
+      coerencia_metodologica: number;
+      postura_argumentativa: number;
+    };
+    feedback: string;
+  };
+}> {
+  return api<{
+    session: BancaSession;
+    latest_evaluation: {
+      rubric_scores: {
+        dominio_conteudo: number;
+        fundamentacao_evidencias: number;
+        coerencia_metodologica: number;
+        postura_argumentativa: number;
+      };
+      feedback: string;
+    };
+  }>(`/projects/${projectId}/banca/sessions/${sessionId}/turn`, {
+    method: "POST",
+    body: { answer },
+  });
+}
+
+export async function concludeBancaSession(
+  projectId: string,
+  sessionId: string
+): Promise<{ session: BancaSession }> {
+  return api<{ session: BancaSession }>(
+    `/projects/${projectId}/banca/sessions/${sessionId}/conclude`,
+    {
+      method: "POST",
+    }
+  );
+}
+
+// ── Multi-advisee cohort dashboard (T7.4) ───────────────────────────────────
+
+export type CohortSkippedStep = {
+  node_key: string;
+  title: string;
+  phase: string;
+  reason: string;
+  skipped_at: string | null;
+};
+
+export type CohortStudentOverview = {
+  project_id: string;
+  title: string;
+  work: string;
+  institution: string;
+  citation_style: string;
+  deadline: string | null;
+  weekly_hours: number;
+  student: {
+    name: string;
+    email: string;
+    initials: string;
+  };
+  progress: {
+    total_nodes: number;
+    done_nodes: number;
+    available_nodes: number;
+    completion_rate: number;
+    skipped_count: number;
+    skipped_steps: CohortSkippedStep[];
+  };
+  schedule: {
+    days_until_deadline: number | null;
+    is_at_risk: boolean;
+    risk_level: "overdue" | "critical" | "warning" | "ontrack" | "no_deadline";
+    risk_label: string;
+    alert: string;
+    suggested_weekly_hours: number | null;
+    estimated_completion_date: string | null;
+  };
+  governance: {
+    sources_count: number;
+    verified_claims_count: number;
+    sections_count: number;
+    unresolved_comments_count: number;
+    direct_human_pct: number;
+    ai_assisted_pct: number;
+    requires_disclosure: boolean;
+    banca_verdict: string | null;
+    banca_score: number | null;
+  };
+};
+
+export type CohortDashboardMetrics = {
+  total_advisees: number;
+  average_progress: number;
+  at_risk_count: number;
+  total_skipped_steps: number;
+  total_unresolved_comments: number;
+  by_work: Record<string, number>;
+  by_risk: Record<string, number>;
+};
+
+export type CohortDashboardResponse = {
+  advisor_email: string;
+  metrics: CohortDashboardMetrics;
+  students: CohortStudentOverview[];
+};
+
+export async function getCohortSummary(): Promise<CohortDashboardResponse> {
+  return api<CohortDashboardResponse>("/advisor/cohort-summary");
+}
+
+export async function downloadCohortExport(
+  format: "csv" | "markdown" = "csv",
+  defaultFilename?: string
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/advisor/cohort-export?format=${format}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, "Erro ao exportar ata de acompanhamento.");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = defaultFilename || (format === "markdown" ? "relatorio_turma.md" : "relatorio_turma.csv");
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function linkAdvisee(data: {
+  project_id?: string;
+  share_token?: string;
+}): Promise<{ ok: boolean; project_id: string; title: string; message: string }> {
+  return api<{ ok: boolean; project_id: string; title: string; message: string }>(
+    "/advisor/link-advisee",
+    {
+      method: "POST",
+      body: data,
+    }
+  );
+}
+
+

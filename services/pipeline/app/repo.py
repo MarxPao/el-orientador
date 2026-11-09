@@ -104,6 +104,12 @@ class Repo(Protocol):
     def list_error_events(self, limit: int = 100) -> list[dict]: ...
     def purge_error_events(self, older_than_days: int) -> int: ...
     def get_beta_metrics(self) -> dict: ...
+    def add_beta_feedback(self, user_id: str, feedback: dict) -> dict: ...
+    def list_beta_feedback(self) -> list[dict]: ...
+    def create_banca_session(self, project_id: str, examiner_profile: str) -> dict: ...
+    def get_banca_session(self, session_id: str) -> dict | None: ...
+    def list_banca_sessions(self, project_id: str) -> list[dict]: ...
+    def update_banca_session(self, session_id: str, **fields) -> dict | None: ...
 
 
 VERSION_MIN_INTERVAL_SECONDS = 300  # autosaves inside this window share one restore point
@@ -160,6 +166,8 @@ class InMemoryRepo:
         self.section_comments: list[dict] = []
         self.section_versions: list[dict] = []
         self.node_feedback: list[dict] = []
+        self.beta_feedback: list[dict] = []
+        self.banca_sessions: list[dict] = []
         self.chunks: list[dict] = []
         self.provenance: list[dict] = []
         self.error_events: list[dict] = []
@@ -407,6 +415,66 @@ class InMemoryRepo:
 
     def list_node_feedback(self, project_id, node_key):
         return [dict(f) for f in self.node_feedback if f["project_id"] == project_id and f["node_key"] == node_key]
+
+    def add_beta_feedback(self, user_id, feedback):
+        entry = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "project_id": feedback.get("project_id"),
+            "overall_rating": int(feedback["overall_rating"]),
+            "socratic_gate_helpful": int(feedback["socratic_gate_helpful"]),
+            "evidence_trust": int(feedback["evidence_trust"]),
+            "relief_level": int(feedback["relief_level"]),
+            "pricing_preference": feedback["pricing_preference"],
+            "brand_impression": feedback["brand_impression"],
+            "comments": feedback.get("comments"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.beta_feedback.append(entry)
+        return dict(entry)
+
+    def list_beta_feedback(self):
+        return [dict(f) for f in self.beta_feedback]
+
+    # ------------------------------------------------------------------ academic defense simulator
+    def create_banca_session(self, project_id: str, examiner_profile: str) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        session = {
+            "id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "examiner_profile": examiner_profile,
+            "status": "in_progress",
+            "turns": [],
+            "final_report": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.banca_sessions.append(session)
+        return dict(session)
+
+    def get_banca_session(self, session_id: str) -> dict | None:
+        for s in self.banca_sessions:
+            if s["id"] == session_id:
+                return dict(s)
+        return None
+
+    def list_banca_sessions(self, project_id: str) -> list[dict]:
+        return [
+            dict(s)
+            for s in sorted(
+                [s for s in self.banca_sessions if s["project_id"] == project_id],
+                key=lambda x: x["created_at"],
+                reverse=True,
+            )
+        ]
+
+    def update_banca_session(self, session_id: str, **fields) -> dict | None:
+        for s in self.banca_sessions:
+            if s["id"] == session_id:
+                s.update(fields)
+                s["updated_at"] = datetime.now(timezone.utc).isoformat()
+                return dict(s)
+        return None
 
     # ------------------------------------------------------------------ provenance ledger
     def add_provenance_event(self, project_id, section_id, kind, source, words, text, meta, created_by):
@@ -680,6 +748,12 @@ class InMemoryRepo:
         total_reports_generated = len(self.advisor_reports)
 
         ai_by_action = Counter(l.get("action", "outro") for l in self.ai_usage)
+        fb_count = len(self.beta_feedback)
+        avg_overall = round(sum(f["overall_rating"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+        avg_gate = round(sum(f["socratic_gate_helpful"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+        avg_evidence = round(sum(f["evidence_trust"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+        avg_relief = round(sum(f["relief_level"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+        pricing_dist = dict(Counter(f["pricing_preference"] for f in self.beta_feedback))
 
         return {
             "students_registered": total_students,
@@ -710,6 +784,15 @@ class InMemoryRepo:
                 "advisor_reports_generated": total_reports_generated,
             },
             "ai_usage": dict(ai_by_action),
+            "feedback": {
+                "total_responses": fb_count,
+                "average_overall_rating": avg_overall,
+                "average_socratic_gate_helpful": avg_gate,
+                "average_evidence_trust": avg_evidence,
+                "average_relief_level": avg_relief,
+                "pricing_preferences": pricing_dist,
+                "recent_brand_impressions": [f["brand_impression"] for f in self.beta_feedback[-10:]],
+            },
             "pricing_validation": {
                 "hypothesis_a": "Passe por projeto (R$ 89 a R$ 149)",
                 "hypothesis_b": "Assinatura mensal (R$ 25 a R$ 50)",
@@ -1580,6 +1663,119 @@ class PostgresRepo:
             ).fetchall()
         return [self._feedback_row(r) for r in rows]
 
+    def add_beta_feedback(self, user_id, feedback):
+        with self._conn() as c:
+            r = c.execute(
+                """INSERT INTO beta_feedback (user_id, project_id, overall_rating, socratic_gate_helpful, evidence_trust, relief_level, pricing_preference, brand_impression, comments)
+                   VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING id, user_id, project_id, overall_rating, socratic_gate_helpful, evidence_trust, relief_level, pricing_preference, brand_impression, comments, created_at""",
+                (user_id, feedback.get("project_id"), feedback["overall_rating"], feedback["socratic_gate_helpful"], feedback["evidence_trust"], feedback["relief_level"], feedback["pricing_preference"], feedback["brand_impression"], feedback.get("comments")),
+            ).fetchone()
+        return {
+            "id": str(r[0]), "user_id": str(r[1]), "project_id": str(r[2]) if r[2] else None,
+            "overall_rating": r[3], "socratic_gate_helpful": r[4], "evidence_trust": r[5],
+            "relief_level": r[6], "pricing_preference": r[7], "brand_impression": r[8],
+            "comments": r[9], "created_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
+        }
+
+    def list_beta_feedback(self):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, user_id, project_id, overall_rating, socratic_gate_helpful, evidence_trust, relief_level, pricing_preference, brand_impression, comments, created_at FROM beta_feedback ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            {
+                "id": str(r[0]), "user_id": str(r[1]), "project_id": str(r[2]) if r[2] else None,
+                "overall_rating": r[3], "socratic_gate_helpful": r[4], "evidence_trust": r[5],
+                "relief_level": r[6], "pricing_preference": r[7], "brand_impression": r[8],
+                "comments": r[9], "created_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------ academic defense simulator
+    def create_banca_session(self, project_id: str, examiner_profile: str) -> dict:
+        with self._conn() as c:
+            r = c.execute(
+                """INSERT INTO banca_sessions (project_id, examiner_profile, status, turns)
+                   VALUES (%s::uuid, %s, 'in_progress', '[]'::jsonb)
+                   RETURNING id, project_id, examiner_profile, status, turns, final_report, created_at, updated_at""",
+                (project_id, examiner_profile),
+            ).fetchone()
+        return {
+            "id": str(r[0]), "project_id": str(r[1]), "examiner_profile": r[2],
+            "status": r[3], "turns": r[4] if isinstance(r[4], list) else json.loads(r[4] or "[]"),
+            "final_report": r[5] if isinstance(r[5], dict) or r[5] is None else json.loads(r[5]),
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+            "updated_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+        }
+
+    def get_banca_session(self, session_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute(
+                """SELECT id, project_id, examiner_profile, status, turns, final_report, created_at, updated_at
+                   FROM banca_sessions WHERE id = %s::uuid""",
+                (session_id,),
+            ).fetchone()
+        if not r:
+            return None
+        return {
+            "id": str(r[0]), "project_id": str(r[1]), "examiner_profile": r[2],
+            "status": r[3], "turns": r[4] if isinstance(r[4], list) else json.loads(r[4] or "[]"),
+            "final_report": r[5] if isinstance(r[5], dict) or r[5] is None else json.loads(r[5]),
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+            "updated_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+        }
+
+    def list_banca_sessions(self, project_id: str) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT id, project_id, examiner_profile, status, turns, final_report, created_at, updated_at
+                   FROM banca_sessions WHERE project_id = %s::uuid ORDER BY created_at DESC""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "id": str(r[0]), "project_id": str(r[1]), "examiner_profile": r[2],
+                "status": r[3], "turns": r[4] if isinstance(r[4], list) else json.loads(r[4] or "[]"),
+                "final_report": r[5] if isinstance(r[5], dict) or r[5] is None else json.loads(r[5]),
+                "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+                "updated_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+            }
+            for r in rows
+        ]
+
+    def update_banca_session(self, session_id: str, **fields) -> dict | None:
+        if not fields:
+            return self.get_banca_session(session_id)
+        set_clauses = []
+        vals = []
+        for k, v in fields.items():
+            if k in ("turns", "final_report"):
+                set_clauses.append(f"{k} = %s::jsonb")
+                vals.append(json.dumps(v) if v is not None else None)
+            else:
+                set_clauses.append(f"{k} = %s")
+                vals.append(v)
+        set_clauses.append("updated_at = now()")
+        vals.append(session_id)
+        with self._conn() as c:
+            r = c.execute(
+                f"""UPDATE banca_sessions SET {', '.join(set_clauses)}
+                    WHERE id = %s::uuid
+                    RETURNING id, project_id, examiner_profile, status, turns, final_report, created_at, updated_at""",
+                tuple(vals),
+            ).fetchone()
+        if not r:
+            return None
+        return {
+            "id": str(r[0]), "project_id": str(r[1]), "examiner_profile": r[2],
+            "status": r[3], "turns": r[4] if isinstance(r[4], list) else json.loads(r[4] or "[]"),
+            "final_report": r[5] if isinstance(r[5], dict) or r[5] is None else json.loads(r[5]),
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6]),
+            "updated_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+        }
+
     # ------------------------------------------------------------------ provenance ledger
     @staticmethod
     def _prov_row(r) -> dict:
@@ -1793,6 +1989,21 @@ class PostgresRepo:
 
             ai_rows = c.execute("SELECT action, count(*) FROM ai_usage_log GROUP BY action").fetchall()
             ai_by_action = {row[0]: row[1] for row in ai_rows}
+            try:
+                fb_rows = c.execute("SELECT overall_rating, socratic_gate_helpful, evidence_trust, relief_level, pricing_preference, brand_impression FROM beta_feedback").fetchall()
+                fb_count = len(fb_rows)
+                avg_overall = round(sum(r[0] for r in fb_rows) / fb_count, 2) if fb_count else 0.0
+                avg_gate = round(sum(r[1] for r in fb_rows) / fb_count, 2) if fb_count else 0.0
+                avg_evidence = round(sum(r[2] for r in fb_rows) / fb_count, 2) if fb_count else 0.0
+                avg_relief = round(sum(r[3] for r in fb_rows) / fb_count, 2) if fb_count else 0.0
+                from collections import Counter
+                pricing_dist = dict(Counter(r[4] for r in fb_rows))
+                brand_impr = [r[5] for r in fb_rows[-10:]]
+            except Exception:
+                fb_count = 0
+                avg_overall = avg_gate = avg_evidence = avg_relief = 0.0
+                pricing_dist = {}
+                brand_impr = []
 
         return {
             "students_registered": users_count,
@@ -1823,6 +2034,15 @@ class PostgresRepo:
                 "advisor_reports_generated": rep_count,
             },
             "ai_usage": ai_by_action,
+            "feedback": {
+                "total_responses": fb_count,
+                "average_overall_rating": avg_overall,
+                "average_socratic_gate_helpful": avg_gate,
+                "average_evidence_trust": avg_evidence,
+                "average_relief_level": avg_relief,
+                "pricing_preferences": pricing_dist,
+                "recent_brand_impressions": brand_impr,
+            },
             "pricing_validation": {
                 "hypothesis_a": "Passe por projeto (R$ 89 a R$ 149)",
                 "hypothesis_b": "Assinatura mensal (R$ 25 a R$ 50)",

@@ -365,3 +365,35 @@ def test_complete_beta_lifecycle(client: TestClient):
     assert cmp_body["mode_used"] == "scaffold_socratico"
     assert "comparison_matrix" in cmp_body
     assert cmp_body["updated_section"] is not None
+
+    # 14. Student Beta Feedback & Pilot Metrics (T6.5)
+    fb_res = client.post(
+        "/beta/feedback",
+        json={
+            "project_id": project_id,
+            "overall_rating": 5,
+            "socratic_gate_helpful": 5,
+            "evidence_trust": 5,
+            "relief_level": 5,
+            "pricing_preference": "passe_projeto",
+            "brand_impression": "Sóbrio, rigoroso e acolhedor",
+            "comments": "O gate socrático e a garantia de citação literal salvaram meu TCC.",
+        },
+        headers=headers,
+    )
+    assert fb_res.status_code == 201
+    assert fb_res.json()["feedback"]["overall_rating"] == 5
+
+    # List feedback
+    fb_list = client.get("/beta/feedback", headers=headers)
+    assert fb_list.status_code == 200
+    assert len(fb_list.json()["feedback"]) >= 1
+
+    # Check /beta-metrics aggregation
+    metrics_res = client.get("/beta-metrics", headers=headers)
+    assert metrics_res.status_code == 200
+    metrics_data = metrics_res.json()
+    assert "feedback" in metrics_data
+    assert metrics_data["feedback"]["total_responses"] >= 1
+    assert metrics_data["feedback"]["average_overall_rating"] == 5.0
+    assert metrics_data["feedback"]["pricing_preferences"]["passe_projeto"] >= 1

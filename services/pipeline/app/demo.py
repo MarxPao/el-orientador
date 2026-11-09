@@ -5,6 +5,7 @@ Text is invented for the demo only. Never enabled by default.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .pipeline.verify_quotes import verify_quote
@@ -42,7 +43,7 @@ def _make_pdf(path: Path, pages: list[str]) -> None:
     doc.close()
 
 
-def seed_demo(repo: Repo, storage_dir: Path) -> None:
+def seed_demo(repo: Repo, storage_dir: Path, with_cohort: bool = False) -> None:
     if repo.get_user_by_email(DEMO_EMAIL):
         return
     user = repo.create_user(DEMO_EMAIL, "Usuária de demonstração", hash_password(DEMO_PASSWORD))
@@ -92,3 +93,71 @@ def seed_demo(repo: Repo, storage_dir: Path) -> None:
         "note": 'Não encontrei estudos nas buscas feitas: openalex ("Aprendizagem significativa" AND "Motivação"), semantic_scholar (Aprendizagem significativa Motivação).',
         "status": "open",
     }])
+
+    if with_cohort or os.environ.get("DEMO_COHORT") == "1":
+        _seed_beta_cohort(repo)
+
+
+def _seed_beta_cohort(repo: Repo) -> None:
+    cohort = [
+        ("mariana.silva@beta.br", "Mariana Silva (TCC CC)", "tcc", 6, "passe_projeto", 5, 5, 5, 5, "Foco acadêmico sério, sem enrolação."),
+        ("lucas.mendes@beta.br", "Lucas Mendes (Mestrado Educ)", "pre_projeto_mestrado", 8, "passe_projeto", 5, 4, 5, 4, "A verificação de citação literal passa muita segurança."),
+        ("beatriz.costa@beta.br", "Beatriz Costa (TCC Eng)", "tcc", 5, "mensal", 4, 4, 5, 4, "A árvore de progresso tirou a paralisia inicial."),
+        ("rodrigo.alves@beta.br", "Rodrigo Alves (Doutorado Saúde)", "tese", 12, "passe_projeto", 5, 5, 5, 5, "O relatório para o orientador facilitou muito nossas reuniões quinzenais."),
+        ("camila.rocha@beta.br", "Camila Rocha (TCC Direito)", "tcc", 7, "passe_projeto", 4, 4, 4, 5, "Gostei da postura sóbria de caderno de laboratório."),
+        ("felipe.santos@beta.br", "Felipe Santos (Mestrado Comp)", "dissertacao", 9, "passe_projeto", 5, 5, 5, 5, "Melhor do que chats que inventam DOIs inexistentes."),
+        ("aline.oliveira@beta.br", "Aline Oliveira (TCC Admin)", "tcc", 5, "mensal", 4, 3, 5, 4, "O gate socrático me fez ajustar a pergunta de pesquisa."),
+        ("gustavo.lima@beta.br", "Gustavo Lima (TCC Bio)", "tcc", 6, "passe_projeto", 5, 5, 5, 4, "O mapa conceitual economizou semanas de leitura desordenada."),
+        ("juliana.martins@beta.br", "Juliana Martins (Mestrado Letras)", "pre_projeto_mestrado", 6, "passe_projeto", 5, 4, 5, 5, "Passe por projeto faz muito mais sentido que pagar o ano todo."),
+        ("tiago.ribeiro@beta.br", "Tiago Ribeiro (TCC Economia)", "tcc", 4, "outro", 3, 3, 4, 3, "Preciso de mais modelos institucionais específicos."),
+        ("amanda.ferreira@beta.br", "Amanda Ferreira (TCC Psicologia)", "tcc", 3, "passe_projeto", 4, 4, 4, 4, "Muito bom para estruturar os objetivos."),
+        ("gabriel.souza@beta.br", "Gabriel Souza (Artigo)", "artigo", 7, "passe_projeto", 5, 4, 5, 4, "Caderno de laboratório impecável."),
+    ]
+    for email, name, work, doc_count, pricing, overall, gate, trust, relief, comm in cohort:
+        if repo.get_user_by_email(email):
+            continue
+        u = repo.create_user(email, name, hash_password("beta-senha-123"))
+        p = repo.create_project(u["id"], {
+            "title": f"Projeto de Pesquisa - {name.split()[0]}",
+            "work": work,
+            "institution": "Universidade Pública",
+            "citation_style": "abnt",
+            "deadline": "2026-12-15",
+            "weekly_hours": 10,
+            "research_problem": "Investigação experimental com evidências verificadas.",
+        })
+        repo.invite_advisor(p["id"], DEMO_EMAIL, True)
+        from .tree import initial_nodes, load_template
+        tmpl = load_template(work)
+        repo.save_progress_nodes(p["id"], initial_nodes(tmpl))
+        if doc_count >= 6:
+            repo.update_progress_node(p["id"], "tema_delimitacao", status="done")
+            repo.update_progress_node(p["id"], "problema_pesquisa", status="done")
+        elif doc_count == 5:
+            repo.update_progress_node(p["id"], "tema_delimitacao", status="done")
+            repo.update_progress_node(p["id"], "problema_pesquisa", status="skipped", skipped_reason="Problema alinhado com edital PIBIC prévio")
+        for i in range(doc_count):
+            repo.create_document(p["id"], {
+                "doi": f"10.1000/beta-{u['id'][:4]}-{i}",
+                "title": f"Estudo empírico referenciado {i+1}",
+                "authors": ["Autor Teste"],
+                "year": 2020 + (i % 5),
+                "venue": "Revista Científica",
+                "metadata_source": "crossref",
+                "retracted": False,
+                "storage_path": f"{p['id']}/doc-{i}.pdf",
+                "analysis": "full_text",
+                "status": "extracted",
+            })
+        repo.add_beta_feedback(u["id"], {
+            "project_id": p["id"],
+            "overall_rating": overall,
+            "socratic_gate_helpful": gate,
+            "evidence_trust": trust,
+            "relief_level": relief,
+            "pricing_preference": pricing,
+            "brand_impression": "Sóbrio, confiável, focado em evidências",
+            "comments": comm,
+        })
+
+seed_beta_cohort = _seed_beta_cohort

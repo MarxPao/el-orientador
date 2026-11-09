@@ -251,9 +251,17 @@ export default function ProjetosPage() {
         {/* Advising projects */}
         {advisingProjects.length > 0 && (
           <section aria-label="Projetos sob orientação" className="mt-12">
-            <div className="flex items-center gap-3 mb-5">
-              <h2 className="font-display text-2xl text-ink">Projetos sob sua orientação</h2>
-              <span className="rounded-full bg-purple/10 px-2.5 py-0.5 text-[13px] font-bold text-purple">{advisingProjects.length}</span>
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
+              <div className="flex items-center gap-3">
+                <h2 className="font-display text-2xl text-ink">Projetos sob sua orientação</h2>
+                <span className="rounded-full bg-purple/10 px-2.5 py-0.5 text-[13px] font-bold text-purple">{advisingProjects.length}</span>
+              </div>
+              <Link
+                href="/orientador/painel"
+                className="inline-flex min-h-[38px] items-center rounded-[8px] bg-purple px-4 text-[14px] font-medium text-paper hover:bg-purple/90 transition shadow-sm"
+              >
+                Abrir Painel Multi-orientandos & Turmas →
+              </Link>
             </div>
             <ul className="space-y-4">
               {advisingProjects.map((p) => (

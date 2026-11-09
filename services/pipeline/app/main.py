@@ -6,6 +6,9 @@ register_routes(app, ctx) e nunca precisa de globais.
 """
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv(override=False)
+
 import os
 import threading
 import uuid
@@ -23,7 +26,8 @@ from .repo import InMemoryRepo, PostgresRepo, Repo
 from .llm_gateway import wrap as wrap_llm
 
 from .routers._ctx import AppCtx
-from .routers import auth, projects, library, map, tree, sections, authorship, advisor
+from .routers import auth, projects, library, map, tree, sections, authorship, advisor, analysis, repositories, defense, export, cohort
+from .main_models import _LOGIN_FAILS, _login_failed, _login_lock_remaining
 
 
 def default_llm_factory():
@@ -37,13 +41,16 @@ def default_repo() -> Repo:
     return PostgresRepo(dsn) if dsn else InMemoryRepo()
 
 
+_DEFAULT_CLIENT = object()
+
+
 def create_app(
     repo: Repo | None = None,
     fetch_json: FetchJson | None = None,
     storage_dir: Path | None = None,
     llm_factory: LLMFactory | None = None,
     job_queue: JobQueue | None = None,
-    client: LLMClient | None = None,
+    client: Any = _DEFAULT_CLIENT,
 ) -> FastAPI:
     app = FastAPI(title="El Orientador API")
 
@@ -54,12 +61,12 @@ def create_app(
 
     if os.environ.get("DEMO_SEED") == "1":
         from .demo import seed_demo
-        seed_demo(repo, storage_dir)
+        seed_demo(repo, storage_dir, with_cohort=os.environ.get("DEMO_COHORT") == "1")
 
     # ── Cliente LLM ───────────────────────────────────────────────────
-    llm_factory = llm_factory or default_llm_factory
-    if client is None and llm_factory:
-        client = llm_factory()
+    if client is _DEFAULT_CLIENT:
+        factory = llm_factory or default_llm_factory
+        client = factory() if factory else None
     client = wrap_llm(client)
 
     # ── Fila de jobs ──────────────────────────────────────────────────
@@ -134,5 +141,12 @@ def create_app(
     sections.register_routes(app, ctx)
     authorship.register_routes(app, ctx)
     advisor.register_routes(app, ctx)
+    analysis.register_routes(app, ctx)
+    repositories.register_routes(app, ctx)
+    defense.register_routes(app, ctx)
+    export.register_routes(app, ctx)
+    cohort.register_routes(app, ctx)
 
     return app
+
+app = create_app()

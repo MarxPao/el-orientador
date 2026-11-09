@@ -12,6 +12,7 @@ import {
   AuthorshipPrism,
   CoherenceWarning,
   downloadDocx,
+  downloadLatexPackage,
   getToken,
   MapNode,
   Project,
@@ -563,9 +564,12 @@ export default function EditorView({ id }: { id: string }) {
 
   // Suggestions the author has not answered yet: the export stops once to say so (the document states it either way).
   const [pendingReview, setPendingReview] = useState<{ total: number; sections: { section_id: string; title: string | null; count: number }[] } | null>(null);
+  const [pendingFormat, setPendingFormat] = useState<"docx" | "latex">("docx");
+  const [isExportingLatex, setIsExportingLatex] = useState(false);
 
   async function handleExport(force = false) {
     setIsExporting(true);
+    setPendingFormat("docx");
     try {
       if (!force) {
         const pend = await api<{ available: boolean; total: number; sections: { section_id: string; title: string | null; count: number }[] }>(
@@ -583,6 +587,30 @@ export default function EditorView({ id }: { id: string }) {
       setError(err instanceof Error ? err.message : "Erro ao exportar DOCX.");
     } finally {
       setIsExporting(false);
+    }
+  }
+
+  async function handleExportLatex(force = false) {
+    setIsExportingLatex(true);
+    setPendingFormat("latex");
+    try {
+      if (!force) {
+        const pend = await api<{ available: boolean; total: number; sections: { section_id: string; title: string | null; count: number }[] }>(
+          `/projects/${id}/provenance/pending`
+        ).catch(() => null);
+        if (pend && pend.available && pend.total > 0) {
+          setPendingReview({ total: pend.total, sections: pend.sections });
+          return;
+        }
+      }
+      setPendingReview(null);
+      const cleanTitle = (project?.title || "trabalho").toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 40);
+      await downloadLatexPackage(id, `${cleanTitle}_latex_overleaf.zip`);
+      setNotice("Pacote LaTeX compilável baixado (.zip para Overleaf).");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao exportar pacote LaTeX.");
+    } finally {
+      setIsExportingLatex(false);
     }
   }
 
@@ -821,11 +849,22 @@ export default function EditorView({ id }: { id: string }) {
               Orientadores ({advisors.length})
             </Button>
 
+            {/* Exportação em LaTeX (Overleaf) e DOCX (Word ABNT) */}
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={isExportingLatex || isExporting}
+              onClick={() => void handleExportLatex()}
+              title="Baixar pacote .zip modular pronto para compilar no Overleaf com classe abnTeX2"
+            >
+              {isExportingLatex ? "Gerando LaTeX…" : "Exportar LaTeX (.zip Overleaf)"}
+            </Button>
+
             {/* Único botão principal roxo da tela */}
             <Button
               type="button"
               variant="primary"
-              disabled={isExporting}
+              disabled={isExporting || isExportingLatex}
               onClick={() => void handleExport()}
             >
               {isExporting ? "Gerando Word…" : "Exportar DOCX (ABNT)"}
@@ -856,7 +895,17 @@ export default function EditorView({ id }: { id: string }) {
               >
                 Revisar agora
               </Button>
-              <Button type="button" variant="secondary" onClick={() => void handleExport(true)}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  if (pendingFormat === "latex") {
+                    void handleExportLatex(true);
+                  } else {
+                    void handleExport(true);
+                  }
+                }}
+              >
                 Exportar mesmo assim
               </Button>
             </div>

@@ -1,10 +1,11 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import React, { useCallback, useState } from "react";
 import { clearToken } from "@/lib/api";
 import { Logo } from "./logo";
+import { BetaFeedbackDialog } from "./beta-feedback-dialog";
 
 export type AppHeaderProps = {
   projectId?: string;
@@ -30,7 +31,9 @@ export function AppHeader({ projectId, projectTitle, onLeave }: AppHeaderProps) 
     ? [
         { label: "Árvore de progresso", href: `/projetos/${projectId}/arvore` },
         { label: "Mapa de conhecimento", href: `/projetos/${projectId}/mapa` },
+        { label: "Referências", href: `/projetos/${projectId}/referencias` },
         { label: "Editor", href: `/projetos/${projectId}/editor` },
+        { label: "Defesa", href: `/projetos/${projectId}/defesa` },
         { label: "Relatório", href: `/projetos/${projectId}/relatorio` },
       ]
     : [];
@@ -61,6 +64,31 @@ export function AppHeader({ projectId, projectTitle, onLeave }: AppHeaderProps) 
 
           {/* Nav desktop */}
           <nav aria-label="Navegação principal" className="flex items-center gap-1 sm:gap-2 text-[15px]">
+            {!projectId && (
+              <div className="hidden sm:flex items-center gap-1">
+                <Link
+                  href="/projetos"
+                  className={`flex min-h-[44px] items-center rounded-[8px] px-3 text-[14px] font-medium transition ${
+                    pathname === "/projetos"
+                      ? "bg-purple text-paper"
+                      : "text-purple hover:bg-purple/10"
+                  }`}
+                >
+                  Meus Projetos
+                </Link>
+                <Link
+                  href="/orientador/painel"
+                  className={`flex min-h-[44px] items-center rounded-[8px] px-3 text-[14px] font-medium transition ${
+                    pathname?.startsWith("/orientador/painel")
+                      ? "bg-purple text-paper"
+                      : "text-purple hover:bg-purple/10"
+                  }`}
+                >
+                  Painel de Turmas
+                </Link>
+                <span aria-hidden className="mx-1 h-4 w-px bg-borda" />
+              </div>
+            )}
             {projectId && (
               <div className="hidden md:flex items-center gap-1">
                 {navItems.map((item) => {
@@ -91,6 +119,9 @@ export function AppHeader({ projectId, projectTitle, onLeave }: AppHeaderProps) 
               </div>
             )}
 
+            <div className="hidden sm:flex items-center">
+              <BetaFeedbackDialog projectId={projectId} />
+            </div>
             <button
               type="button"
               onClick={handleLeave}
@@ -133,6 +164,29 @@ export function AppHeader({ projectId, projectTitle, onLeave }: AppHeaderProps) 
             className="bg-paper border-b border-borda shadow-lg px-6 py-4 space-y-1"
             onClick={(e) => e.stopPropagation()}
           >
+            {!projectId && (
+              <>
+                <Link
+                  href="/projetos"
+                  onClick={() => setMobileOpen(false)}
+                  className={`flex min-h-[48px] items-center rounded-[10px] px-4 text-[15px] font-medium transition ${
+                    pathname === "/projetos" ? "bg-purple text-paper" : "text-purple hover:bg-purple/10"
+                  }`}
+                >
+                  Meus Projetos
+                </Link>
+                <Link
+                  href="/orientador/painel"
+                  onClick={() => setMobileOpen(false)}
+                  className={`flex min-h-[48px] items-center rounded-[10px] px-4 text-[15px] font-medium transition ${
+                    pathname?.startsWith("/orientador/painel") ? "bg-purple text-paper" : "text-purple hover:bg-purple/10"
+                  }`}
+                >
+                  Painel de Turmas
+                </Link>
+                <div className="my-1 h-px bg-borda" />
+              </>
+            )}
             {projectId && (
               <>
                 {navItems.map((item) => {
@@ -161,6 +215,9 @@ export function AppHeader({ projectId, projectTitle, onLeave }: AppHeaderProps) 
                 <div className="my-1 h-px bg-borda" />
               </>
             )}
+            <div className="py-2">
+              <BetaFeedbackDialog projectId={projectId} />
+            </div>
             <button
               type="button"
               onClick={() => { setMobileOpen(false); handleLeave(); }}

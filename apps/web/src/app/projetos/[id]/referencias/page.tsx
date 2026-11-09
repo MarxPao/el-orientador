@@ -8,18 +8,21 @@ import {
   ConsistencyReport,
   Document,
   RefSearchResult,
+  RepositoryItem,
   SearchResponse,
   api,
   checkConsistency,
   deleteDocument,
   downloadBibliography,
+  downloadLatexPackage,
   fetchByDoi,
   getToken,
   importCitation,
+  importFromRepository,
   listDocuments,
   reindexLibrary,
-  searchCrossRef,
   searchLibrary,
+  searchRepositories,
   uploadDocumentPdf,
   Project,
 } from "@/lib/api";
@@ -57,6 +60,163 @@ function severityDot(s: CitationIssue["severity"]) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function RepoResultCard({
+  item,
+  onImport,
+  importing,
+  imported,
+}: {
+  item: RepositoryItem;
+  onImport: (item: RepositoryItem, fetchPdf: boolean) => void;
+  importing: boolean;
+  imported: boolean;
+}) {
+  const [showAbstract, setShowAbstract] = useState(false);
+  const repoLabel =
+    item.source === "scielo"
+      ? "SciELO"
+      : item.source === "bdtd"
+      ? "CAPES / BDTD"
+      : item.source === "openalex"
+      ? "OpenAlex"
+      : item.source.toUpperCase();
+
+  const repoBadgeStyle =
+    item.source === "scielo"
+      ? "bg-orange/15 text-orange border-orange/30"
+      : item.source === "bdtd"
+      ? "bg-purple/15 text-purple border-purple/30"
+      : "bg-ink/10 text-ink border-borda";
+
+  return (
+    <div className="rounded-[12px] border border-borda bg-superficie p-4 flex flex-col gap-2.5 transition hover:border-purple/30">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5 mb-1 text-[11px]">
+            <span className={`font-semibold uppercase tracking-wider rounded border px-1.5 py-0.5 ${repoBadgeStyle}`}>
+              {repoLabel}
+            </span>
+            {item.is_open_access && (
+              <span className="rounded border border-done/30 px-1.5 py-0.5 bg-done/15 text-done font-medium flex items-center gap-1">
+                <svg viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3">
+                  <path d="M8 1a3.5 3.5 0 00-3.5 3.5v1.75H4A1.5 1.5 0 002.5 7.75v5.5A1.5 1.5 0 004 14.75h8a1.5 1.5 0 001.5-1.5v-5.5a1.5 1.5 0 00-1.5-1.5h-.5V4.5A3.5 3.5 0 008 1zm-2 4.5a2 2 0 114 0v1.75H6V5.5z" />
+                </svg>
+                Acesso Aberto
+              </span>
+            )}
+            {item.citation_count > 0 && (
+              <span className="text-locked font-mono">
+                {item.citation_count} {item.citation_count === 1 ? "citação" : "citações"}
+              </span>
+            )}
+          </div>
+
+          <h3 className="font-medium text-[15px] text-ink leading-snug line-clamp-2">
+            {item.landing_page_url ? (
+              <a href={item.landing_page_url} target="_blank" rel="noreferrer" className="hover:text-purple transition">
+                {item.title}
+              </a>
+            ) : (
+              item.title
+            )}
+          </h3>
+
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[13px] text-locked">
+            {item.authors.length > 0 && (
+              <span className="truncate max-w-[360px]">
+                {item.authors.slice(0, 3).join("; ")}
+                {item.authors.length > 3 ? " et al." : ""}
+              </span>
+            )}
+            {item.year && <span>({item.year})</span>}
+            {item.venue && <span className="italic truncate max-w-[240px]">· {item.venue}</span>}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex flex-col sm:flex-row items-end sm:items-center gap-1.5">
+          {imported ? (
+            <span className="inline-flex h-8 items-center gap-1.5 rounded-[8px] px-3 text-[13px] font-medium bg-done/20 text-done cursor-default">
+              <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5"><path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" /></svg>
+              Importado
+            </span>
+          ) : item.pdf_url ? (
+            <>
+              <button
+                type="button"
+                onClick={() => onImport(item, true)}
+                disabled={importing}
+                title="Baixa o PDF de acesso aberto e extrai alegações com citação verificada"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] px-3 text-[13px] font-medium bg-purple text-paper hover:bg-purple/90 disabled:opacity-60 transition shadow-sm"
+              >
+                {importing ? <Spinner size={13} /> : (
+                  <>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5">
+                      <path d="M8 2v8m0 0l-3-3m3 3l3-3M2 13h12" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Importar PDF
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => onImport(item, false)}
+                disabled={importing}
+                title="Importa apenas os metadados bibliográficos sem baixar o arquivo"
+                className="inline-flex h-8 items-center rounded-[8px] px-2 text-[12px] font-medium text-locked hover:text-ink hover:bg-borda/40 disabled:opacity-50 transition"
+              >
+                Só citação
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onImport(item, false)}
+              disabled={importing}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] px-3 text-[13px] font-medium bg-purple/10 text-purple hover:bg-purple/20 disabled:opacity-60 transition"
+            >
+              {importing ? <Spinner size={13} /> : "+ Importar citação"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {item.doi && (
+        <p className="text-[12px] text-locked font-mono truncate">
+          DOI:{" "}
+          <a href={`https://doi.org/${item.doi}`} target="_blank" rel="noreferrer" className="text-purple hover:underline">
+            {item.doi}
+          </a>
+        </p>
+      )}
+
+      {item.abstract && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowAbstract(!showAbstract)}
+            className="text-[12px] text-locked hover:text-purple flex items-center gap-1 font-medium transition"
+          >
+            <span>{showAbstract ? "Ocultar resumo" : "Ver resumo"}</span>
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              className={`h-3 w-3 transform transition-transform ${showAbstract ? "rotate-180" : ""}`}
+            >
+              <path d="M4 6l4 4 4-4" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          {showAbstract && (
+            <p className="mt-1.5 text-[12px] text-ink leading-relaxed bg-paper/60 p-2.5 rounded-[8px] border border-borda/60">
+              {item.abstract}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SearchResultCard({
   result,
@@ -255,6 +415,17 @@ function ReferenciasInner() {
   const [importedDois, setImportedDois] = useState<Set<string>>(new Set());
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  // repositórios federados (SciELO, BDTD, OpenAlex)
+  type RepoSource = "all" | "scielo" | "bdtd" | "openalex";
+  const [repoSource, setRepoSource] = useState<RepoSource>("all");
+  const [oaOnly, setOaOnly] = useState(false);
+  const [repoResults, setRepoResults] = useState<RepositoryItem[]>([]);
+  const [searchingRepo, setSearchingRepo] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
+  const [sourcesSearched, setSourcesSearched] = useState<string[]>([]);
+  const [importingRepoId, setImportingRepoId] = useState<string | null>(null);
+  const [importedRepoIds, setImportedRepoIds] = useState<Set<string>>(new Set());
+
   // paste/upload rápido
   const [pasteInput, setPasteInput] = useState("");
   const [pasting, setPasting] = useState(false);
@@ -274,7 +445,7 @@ function ReferenciasInner() {
 
   // exportação
   const [exporting, setExporting] = useState(false);
-  const [exportFormat, setExportFormat] = useState<"abnt" | "apa" | "vancouver" | "bibtex">("abnt");
+  const [exportFormat, setExportFormat] = useState<"abnt" | "apa" | "vancouver" | "bibtex" | "latex_zip">("abnt");
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -291,7 +462,6 @@ function ReferenciasInner() {
     api<Project>(`/projects/${id}`)
       .then(setProject)
       .catch(() => {});
-    setLoadingDocs(true);
     listDocuments(id)
       .then((docs) => { setDocuments(docs); setLoadingDocs(false); })
       .catch((e) => {
@@ -311,15 +481,70 @@ function ReferenciasInner() {
     return () => clearTimeout(timer);
   }, [hasActiveDocs, documents, id]);
 
-  // Auto-search
+  // Auto-search federated repositories
   useEffect(() => {
-    if (!debouncedQuery.trim() || debouncedQuery.trim().length < 3) { setResults([]); return; }
-    setSearching(true);
-    setSearchError(null);
-    searchCrossRef(debouncedQuery, 8)
-      .then((r) => { setResults(r); setSearching(false); })
-      .catch(() => { setSearchError("Não foi possível buscar. Verifique sua conexão."); setSearching(false); });
-  }, [debouncedQuery]);
+    const q = debouncedQuery.trim();
+    if (!q || q.length < 3) return;
+
+    let active = true;
+    const timer = setTimeout(() => {
+      setSearchingRepo(true);
+      setRepoError(null);
+      searchRepositories({
+        q,
+        source: repoSource,
+        oa_only: oaOnly,
+        limit: 12,
+      })
+        .then((r) => {
+          if (!active) return;
+          setRepoResults(r.results);
+          setSourcesSearched(r.sources_searched ?? []);
+          setSearchingRepo(false);
+        })
+        .catch((e) => {
+          if (!active) return;
+          setRepoError(e instanceof Error ? e.message : "Não foi possível buscar nos repositórios.");
+          setSearchingRepo(false);
+        });
+    }, 0);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [debouncedQuery, repoSource, oaOnly]);
+
+  async function handleRepoImport(item: RepositoryItem, fetchPdf: boolean) {
+    setImportingRepoId(item.id);
+    try {
+      const res = await importFromRepository(id, {
+        source_id: item.id,
+        repository: item.source,
+        title: item.title,
+        authors: item.authors,
+        year: item.year,
+        venue: item.venue,
+        doi: item.doi,
+        pdf_url: item.pdf_url,
+        fetch_pdf: fetchPdf,
+      });
+      setImportedRepoIds((prev) => new Set(prev).add(item.id));
+      if (res.downloaded) {
+        setNotice(`"${item.title.slice(0, 50)}…" importado com PDF. Extração em andamento.`);
+      } else if (res.warning) {
+        setNotice(`"${item.title.slice(0, 50)}…" importado como referência (${res.warning}).`);
+      } else {
+        setNotice(`"${item.title.slice(0, 50)}…" importado com sucesso.`);
+      }
+      const updated = await listDocuments(id);
+      setDocuments(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao importar do repositório.");
+    } finally {
+      setImportingRepoId(null);
+    }
+  }
 
   async function handleDoiSearch() {
     if (!doiInput.trim()) return;
@@ -421,8 +646,15 @@ function ReferenciasInner() {
   async function handleExport() {
     setExporting(true);
     try {
-      const ext = exportFormat === "bibtex" ? "bib" : "txt";
-      await downloadBibliography(id, exportFormat, `referencias_${exportFormat}.${ext}`);
+      if (exportFormat === "latex_zip") {
+        const cleanTitle = (project?.title || "trabalho").toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 40);
+        await downloadLatexPackage(id, `${cleanTitle}_latex_overleaf.zip`);
+        setNotice("Pacote LaTeX compilável baixado (.zip para Overleaf).");
+      } else {
+        const ext = exportFormat === "bibtex" ? "bib" : "txt";
+        await downloadBibliography(id, exportFormat, `referencias_${exportFormat}.${ext}`);
+        setNotice(`Referências exportadas com sucesso (${exportFormat.toUpperCase()}).`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao exportar.");
     } finally {
@@ -488,10 +720,11 @@ function ReferenciasInner() {
               onChange={(e) => setExportFormat(e.target.value as typeof exportFormat)}
               className="h-9 rounded-[8px] border border-borda bg-superficie px-2.5 text-[13px] text-ink focus:border-purple outline-none"
             >
-              <option value="abnt">ABNT</option>
-              <option value="apa">APA</option>
-              <option value="vancouver">Vancouver</option>
-              <option value="bibtex">BibTeX</option>
+              <option value="abnt">ABNT (TXT)</option>
+              <option value="bibtex">BibTeX (.bib)</option>
+              <option value="apa">APA (TXT)</option>
+              <option value="vancouver">Vancouver (TXT)</option>
+              <option value="latex_zip">Pacote LaTeX (.zip Overleaf)</option>
             </select>
             <Button
               type="button"
@@ -541,7 +774,7 @@ function ReferenciasInner() {
             ) : documents.length === 0 ? (
               <div className="rounded-[14px] border border-dashed border-borda p-10 text-center">
                 <p className="text-[15px] text-locked">Nenhuma referência ainda.</p>
-                <p className="mt-1 text-[13px] text-locked">Use a aba "Buscar &amp; importar" para adicionar.</p>
+                <p className="mt-1 text-[13px] text-locked">Use a aba &quot;Buscar &amp; importar&quot; para adicionar.</p>
               </div>
             ) : (
               documents.map((doc) => (
@@ -620,30 +853,114 @@ function ReferenciasInner() {
         {/* ── Tab: Buscar & importar ── */}
         {tab === "buscar" && (
           <div className="space-y-6">
-            {/* Busca por título / palavras-chave */}
+            {/* Busca integrada em repositórios abertos (SciELO, BDTD, OpenAlex) */}
             <section>
-              <h2 className="text-[15px] font-semibold text-ink mb-3">Buscar por título ou palavra-chave</h2>
+              <h2 className="text-[15px] font-semibold text-ink mb-1">
+                Buscar em Repositórios Abertos (SciELO, BDTD e OpenAlex)
+              </h2>
+              <p className="text-[13px] text-locked mb-3">
+                Pesquise artigos científicos, teses e dissertações brasileiras e acervo global com metadados verificados e importação direta.
+              </p>
+
+              {/* Seletor de repositórios */}
+              <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                {[
+                  { id: "all", label: "Todos os repositórios" },
+                  { id: "scielo", label: "SciELO (Brasil/LatAm)" },
+                  { id: "bdtd", label: "CAPES / BDTD (Teses)" },
+                  { id: "openalex", label: "OpenAlex (Global)" },
+                ].map((src) => (
+                  <button
+                    key={src.id}
+                    type="button"
+                    onClick={() => setRepoSource(src.id as RepoSource)}
+                    className={[
+                      "rounded-[8px] px-3 py-1.5 text-[12px] font-medium transition",
+                      repoSource === src.id
+                        ? "bg-purple text-paper shadow-sm"
+                        : "bg-superficie text-locked border border-borda hover:text-ink hover:border-purple/40",
+                    ].join(" ")}
+                  >
+                    {src.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Filtro de Acesso Aberto */}
+              <label className="inline-flex items-center gap-2 mb-3 text-[13px] text-ink cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={oaOnly}
+                  onChange={(e) => setOaOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-borda text-purple accent-purple focus:ring-purple"
+                />
+                <span>Somente Acesso Aberto (com link direto de PDF disponível)</span>
+              </label>
+
+              {/* Campo de busca */}
               <div className="relative">
                 <input
                   type="text"
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Ex.: machine learning education, Piaget 1976…"
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setQuery(v);
+                    if (!v.trim() || v.trim().length < 3) {
+                      setRepoResults([]);
+                      setSourcesSearched([]);
+                    }
+                  }}
+                  placeholder="Ex.: evasão escolar ensino superior, letramento digital, Paulo Freire…"
                   className="w-full h-11 rounded-[10px] border border-borda bg-superficie pl-4 pr-10 text-[15px] text-ink focus:border-purple outline-none transition"
+                  aria-label="Buscar nos repositórios"
                 />
                 <div className="absolute right-3 top-1/2 -translate-y-1/2 text-locked">
-                  {searching ? <Spinner size={15} /> : (
+                  {searchingRepo ? (
+                    <Spinner size={16} />
+                  ) : (
                     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4">
                       <circle cx="9" cy="9" r="6" /><path d="M15 15l-3-3" strokeLinecap="round" />
                     </svg>
                   )}
                 </div>
               </div>
-              {searchError && <p className="mt-2 text-[13px] text-brand-red">{searchError}</p>}
+              {repoError && <p className="mt-2 text-[13px] text-brand-red">{repoError}</p>}
+
+              {/* Resultados da busca nos repositórios */}
+              {repoResults.length > 0 && (
+                <div className="mt-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-locked">
+                    <span>
+                      {repoResults.length} {repoResults.length === 1 ? "resultado encontrado" : "resultados encontrados"}
+                    </span>
+                    {sourcesSearched.length > 0 && (
+                      <span>Fontes: {sourcesSearched.join(", ")}</span>
+                    )}
+                  </div>
+                  <div className="space-y-3">
+                    {repoResults.map((item) => (
+                      <RepoResultCard
+                        key={item.id}
+                        item={item}
+                        onImport={handleRepoImport}
+                        importing={importingRepoId === item.id}
+                        imported={importedRepoIds.has(item.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!searchingRepo && debouncedQuery.trim().length >= 3 && repoResults.length === 0 && (
+                <div className="mt-4 rounded-[12px] border border-dashed border-borda p-6 text-center text-locked">
+                  <p className="text-[14px]">Nenhum documento encontrado nos repositórios selecionados para “{debouncedQuery}”.</p>
+                  <p className="mt-1 text-[12px]">Tente outros termos de busca ou desmarque o filtro de acesso aberto.</p>
+                </div>
+              )}
             </section>
 
             {/* Busca por DOI */}
-            <section>
+            <section className="pt-2 border-t border-borda">
               <h2 className="text-[15px] font-semibold text-ink mb-3">Buscar por DOI</h2>
               <div className="flex gap-2">
                 <input
@@ -658,15 +975,14 @@ function ReferenciasInner() {
                   Buscar
                 </Button>
               </div>
-            </section>
+              {searchError && <p className="mt-2 text-[13px] text-brand-red">{searchError}</p>}
 
-            {/* Resultados */}
-            {results.length > 0 && (
-              <section>
-                <h2 className="text-[13px] font-semibold text-locked uppercase tracking-wider mb-3">
-                  {results.length} resultado{results.length > 1 ? "s" : ""} (CrossRef)
-                </h2>
-                <div className="space-y-3">
+              {/* Resultados do DOI */}
+              {results.length > 0 && (
+                <div className="mt-3 space-y-3">
+                  <h3 className="text-[13px] font-semibold text-locked uppercase tracking-wider">
+                    Resultado por DOI (CrossRef)
+                  </h3>
                   {results.map((r, i) => (
                     <SearchResultCard
                       key={r.doi ?? i}
@@ -677,8 +993,8 @@ function ReferenciasInner() {
                     />
                   ))}
                 </div>
-              </section>
-            )}
+              )}
+            </section>
 
             {/* Colar referências em texto */}
             <section className="pt-2 border-t border-borda">
@@ -758,7 +1074,7 @@ function ReferenciasInner() {
 
             {consistency === null && !loadingConsistency && (
               <div className="rounded-[14px] border border-dashed border-borda p-10 text-center">
-                <p className="text-[15px] text-locked">Clique em "Verificar agora" para analisar seu trabalho.</p>
+                <p className="text-[15px] text-locked">Clique em &quot;Verificar agora&quot; para analisar seu trabalho.</p>
               </div>
             )}
 
