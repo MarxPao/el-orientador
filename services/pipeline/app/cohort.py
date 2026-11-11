@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from .authorship import compute_project_authorship
+from .errors import record as record_error
 from .repo import Repo
 from .schedule import calculate_schedule
 from .tree import load_template
@@ -95,19 +96,46 @@ def compute_student_overview(repo: Repo, project: dict[str, Any]) -> dict[str, A
         unresolved_comments += sum(1 for c in comments if not c.get("resolved"))
 
     # Authorship & AI Usage
+    direct_human_pct: int | None = None
+    ai_assisted_pct: int | None = None
+    pasted_pct: int | None = None
+    ai_drafted_pct: int | None = None
+    ai_revised_pct: int | None = None
+    polished_pct: int | None = None
+    requires_disclosure: bool | None = None
+    authorship_status = "ok"
     try:
-        authorship = compute_project_authorship(repo, project_id)
-        direct_human_pct = authorship.get("direct_human_pct", 100)
-        ai_assisted_pct = authorship.get("ai_assisted_pct", 0)
+        ev_by_section: dict[str, list[dict]] = {}
+        if hasattr(repo, "list_provenance_events"):
+            for e in repo.list_provenance_events(project_id):
+                ev_by_section.setdefault(e["section_id"], []).append(e)
+        quotes = [c.get("quote", "") for c in claims if c.get("quote")]
+        authorship = compute_project_authorship(
+            sections, verified_quotes=quotes, events_by_section=ev_by_section
+        )
+        direct_human_pct = authorship.get("human_pct")
+        pasted_pct = authorship.get("pasted_pct", 0)
+        ai_drafted_pct = authorship.get("ai_drafted_pct", 0)
+        ai_revised_pct = authorship.get("ai_revised_pct", 0)
+        polished_pct = authorship.get("polished_pct", 0)
+        ai_assisted_pct = ai_drafted_pct + ai_revised_pct + polished_pct
         requires_disclosure = authorship.get("requires_disclosure", False)
-    except Exception:
-        direct_human_pct = 100
-        ai_assisted_pct = 0
-        requires_disclosure = False
+        authorship_status = "ok"
+    except Exception as exc:
+        record_error(repo, "cohort", exc, f"cohort/compute_student_overview project={project_id}")
+        direct_human_pct = None
+        ai_assisted_pct = None
+        pasted_pct = None
+        ai_drafted_pct = None
+        ai_revised_pct = None
+        polished_pct = None
+        requires_disclosure = None
+        authorship_status = "indisponivel"
 
     # Oral Defense Simulation Status
     banca_verdict = None
     banca_score = None
+    banca_status = "none"
     try:
         banca_sessions = repo.list_banca_sessions(project_id)
         if banca_sessions:
@@ -116,8 +144,14 @@ def compute_student_overview(repo: Repo, project: dict[str, Any]) -> dict[str, A
             if rep:
                 banca_verdict = rep.get("verdict_title")
                 banca_score = rep.get("overall_score")
-    except Exception:
-        pass
+                banca_status = "completed"
+            else:
+                banca_status = "in_progress"
+    except Exception as exc:
+        record_error(repo, "cohort", exc, f"cohort/banca_sessions project={project_id}")
+        banca_verdict = None
+        banca_score = None
+        banca_status = "indisponivel"
 
     return {
         "project_id": project_id,
@@ -156,7 +190,13 @@ def compute_student_overview(repo: Repo, project: dict[str, Any]) -> dict[str, A
             "unresolved_comments_count": unresolved_comments,
             "direct_human_pct": direct_human_pct,
             "ai_assisted_pct": ai_assisted_pct,
+            "pasted_pct": pasted_pct,
+            "ai_drafted_pct": ai_drafted_pct,
+            "ai_revised_pct": ai_revised_pct,
+            "polished_pct": polished_pct,
             "requires_disclosure": requires_disclosure,
+            "authorship_status": authorship_status,
+            "banca_status": banca_status,
             "banca_verdict": banca_verdict,
             "banca_score": banca_score,
         },
@@ -222,6 +262,8 @@ def export_cohort_summary_csv(cohort_data: dict[str, Any]) -> str:
         "Fontes Verificadas",
         "Comentários Pendentes",
         "Prisma Autoria (% Humano)",
+        "Prisma Autoria (% IA)",
+        "Prisma Autoria (% Colado de Fora)",
         "Última Banca Simulada",
     ])
 
@@ -229,6 +271,20 @@ def export_cohort_summary_csv(cohort_data: dict[str, Any]) -> str:
         skipped_details = " | ".join(
             f"{step['title']}: {step['reason']}" for step in s["progress"]["skipped_steps"]
         )
+        human_pct = s["governance"]["direct_human_pct"]
+        human_pct_str = f"{human_pct}%" if human_pct is not None else "Indisponível"
+        ai_pct = s["governance"]["ai_assisted_pct"]
+        ai_pct_str = f"{ai_pct}%" if ai_pct is not None else "Indisponível"
+        pasted_pct = s["governance"]["pasted_pct"]
+        pasted_pct_str = f"{pasted_pct}%" if pasted_pct is not None else "Indisponível"
+
+        if s["governance"].get("banca_status") == "indisponivel":
+            banca_str = "Indisponível"
+        elif s["governance"]["banca_verdict"]:
+            banca_str = f"{s['governance']['banca_verdict']} ({s['governance']['banca_score']}/10)"
+        else:
+            banca_str = "Não realizada"
+
         writer.writerow([
             s["student"]["name"],
             s["student"]["email"],
@@ -245,8 +301,10 @@ def export_cohort_summary_csv(cohort_data: dict[str, Any]) -> str:
             s["schedule"]["risk_label"],
             s["governance"]["sources_count"],
             s["governance"]["unresolved_comments_count"],
-            f"{s['governance']['direct_human_pct']}%",
-            f"{s['governance']['banca_verdict']} ({s['governance']['banca_score']}/10)" if s["governance"]["banca_verdict"] else "Não realizada",
+            human_pct_str,
+            ai_pct_str,
+            pasted_pct_str,
+            banca_str,
         ])
 
     return output.getvalue()

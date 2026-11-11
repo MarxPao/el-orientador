@@ -65,11 +65,17 @@ def register_routes(app: FastAPI, ctx: AppCtx) -> None:
             pages = ctx.repo.get_pages(document_id)
             if not pages and doc.get("storage_path"):
                 from ..jobs import parse_pdf
+                from ..errors import record as record_error
                 try:
                     pages = parse_pdf(ctx.storage_dir / doc["storage_path"])
                     ctx.repo.save_pages(document_id, pages)
-                except Exception:
-                    pages = []
+                except Exception as exc:
+                    record_error(ctx.repo, "dissect", exc, f"documents/{document_id}/dissect")
+                    ctx.repo.update_document(document_id, status="failed", stage="parse_failed")
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        f"Falha na leitura do PDF ({type(exc).__name__}): o arquivo pode estar corrompido ou em formato ilegível.",
+                    ) from exc
             if pages:
                 extracted = extract_verified_passages_deterministic(pages, doc.get("title") or "Documento")
                 if extracted:
@@ -95,8 +101,10 @@ def register_routes(app: FastAPI, ctx: AppCtx) -> None:
         if not claim_a or not claim_b:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Selecione dois trechos verificados válidos para comparar e conectar.")
 
-        doc_a = ctx.repo.get_document(claim_a["document_id"]) or {}
-        doc_b = ctx.repo.get_document(claim_b["document_id"]) or {}
+        doc_a = ctx.repo.get_document(claim_a["document_id"])
+        doc_b = ctx.repo.get_document(claim_b["document_id"])
+        if not doc_a or not doc_b:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Documento não encontrado para uma das citações comparadas.")
         sec = ctx.repo.get_section(project_id, body.section_id) if body.section_id else None
         sec_title = sec["title"] if sec else project.get("title", "Referencial Teórico")
 

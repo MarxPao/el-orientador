@@ -458,8 +458,16 @@ export default function AdvisorCohortDashboardPage() {
                         <span>Fontes: <strong className="text-ink">{s.governance.sources_count}</strong></span>
                         <span>Citações verificadas: <strong className="text-ink">{s.governance.verified_claims_count}</strong></span>
                         <span>
-                          Prisma autoria: <strong className="text-ink">{s.governance.direct_human_pct}% humano</strong>
-                          {s.governance.ai_assisted_pct > 0 && ` / ${s.governance.ai_assisted_pct}% IA`}
+                          Prisma autoria:{" "}
+                          {s.governance.direct_human_pct !== null && s.governance.direct_human_pct !== undefined ? (
+                            <>
+                              <strong className="text-ink">{s.governance.direct_human_pct}% humano</strong>
+                              {s.governance.ai_assisted_pct != null && s.governance.ai_assisted_pct > 0 && ` / ${s.governance.ai_assisted_pct}% IA`}
+                              {s.governance.pasted_pct != null && s.governance.pasted_pct > 0 && ` / ${s.governance.pasted_pct}% colado de fora`}
+                            </>
+                          ) : (
+                            <strong className="text-brand-red font-medium">Indisponível</strong>
+                          )}
                         </span>
                         {s.governance.unresolved_comments_count > 0 ? (
                           <span className="text-orange font-semibold">
@@ -468,11 +476,15 @@ export default function AdvisorCohortDashboardPage() {
                         ) : (
                           <span className="text-done font-medium">💬 Comentários em dia</span>
                         )}
-                        {s.governance.banca_verdict && (
+                        {s.governance.banca_status === "indisponivel" ? (
+                          <span className="border border-brand-red/30 bg-brand-red/10 text-brand-red rounded-[6px] px-2 py-0.5 text-[11px] font-semibold">
+                            Banca: Indisponível
+                          </span>
+                        ) : s.governance.banca_verdict ? (
                           <span className="border border-purple/30 bg-purple/10 text-purple rounded-[6px] px-2 py-0.5 text-[11px] font-semibold">
                             Banca: {s.governance.banca_verdict} ({s.governance.banca_score}/10)
                           </span>
-                        )}
+                        ) : null}
                       </div>
 
                       {/* Action Links */}

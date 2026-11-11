@@ -1211,9 +1211,15 @@ export type CohortStudentOverview = {
     verified_claims_count: number;
     sections_count: number;
     unresolved_comments_count: number;
-    direct_human_pct: number;
-    ai_assisted_pct: number;
-    requires_disclosure: boolean;
+    direct_human_pct: number | null;
+    ai_assisted_pct: number | null;
+    pasted_pct: number | null;
+    ai_drafted_pct?: number | null;
+    ai_revised_pct?: number | null;
+    polished_pct?: number | null;
+    requires_disclosure: boolean | null;
+    authorship_status?: string;
+    banca_status?: string;
     banca_verdict: string | null;
     banca_score: number | null;
   };

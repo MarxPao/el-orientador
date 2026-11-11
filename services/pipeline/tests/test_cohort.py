@@ -161,3 +161,223 @@ def test_link_advisee_endpoint():
     # Now adv2 has 1 advisee
     res2 = client.get("/advisor/cohort-summary", headers=auth_header)
     assert res2.json()["metrics"]["total_advisees"] == 1
+
+
+def test_cohort_authorship_with_real_ai_events():
+    repo = InMemoryRepo()
+    advisor = repo.create_user("prof.orientador@universidade.br", "Prof. Orientador", hash_password("senha123"))
+    student = repo.create_user("aluna.pesquisa@universidade.br", "Beatriz Lima", hash_password("senha123"))
+
+    p = repo.create_project(student["id"], {
+        "title": "Estudo de Caso com IA",
+        "work": "tcc",
+        "institution": "UFRJ",
+    })
+    repo.invite_advisor(p["id"], advisor["email"], True)
+
+    # -------------------------------------------------------------------------
+    # MEMÓRIA DE CÁLCULO MANUAL DA FIXTURE:
+    # 1. ai_text possui 19 palavras:
+    #    ["A", "pesquisa", "qualitativa", "permite", "compreender", "fenomenos",
+    #     "sociais", "em", "profundidade", "articulando", "diferentes", "perspectivas",
+    #     "dos", "sujeitos", "investigados", "em", "todas", "as", "dimensoes."] = 19
+    # 2. human_text possui 16 palavras:
+    #    ["Este", "trabalho", "analisa", "o", "impacto", "pedagogico", "das",
+    #     "metodologias", "ativas", "no", "ensino", "fundamental", "publico", "da",
+    #     "regiao", "metropolitana."] = 16
+    # 3. Total de palavras da seção = 19 + 16 = 35 palavras.
+    # 4. Proporções brutas:
+    #    - IA: 19 / 35 = 54.285714...%
+    #    - Humano: 16 / 35 = 45.714285...%
+    # 5. Algoritmo de Maior Resto (Hare-Niemeyer / app.provenance.percentages):
+    #    - Pisos inteiros: IA = 54%, Humano = 45% (Soma = 99%).
+    #    - Restos: Humano = 0.714285... > IA = 0.285714...
+    #    - O ponto residual (+1%) vai para o Humano (maior resto).
+    #    - Resultado determinístico esperado:
+    #      direct_human_pct = 46%
+    #      ai_assisted_pct = 54%
+    #      pasted_pct = 0%
+    #      requires_disclosure = True
+    # -------------------------------------------------------------------------
+    ai_text = (
+        "A pesquisa qualitativa permite compreender fenomenos sociais em profundidade "
+        "articulando diferentes perspectivas dos sujeitos investigados em todas as dimensoes."
+    )
+    human_text = (
+        "Este trabalho analisa o impacto pedagogico das metodologias ativas no ensino fundamental "
+        "publico da regiao metropolitana."
+    )
+
+    content = {
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": ai_text}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": human_text}]},
+        ],
+    }
+    sec = repo.create_section(p["id"], "Metodologia", None, 1, content=content)
+
+    repo.add_provenance_event(
+        p["id"], sec["id"], "ai_draft", "server", 19, ai_text, {}, student["email"]
+    )
+
+    dashboard = compute_cohort_dashboard(repo, advisor["email"])
+    assert len(dashboard["students"]) == 1
+    s_data = dashboard["students"][0]
+
+    gov = s_data["governance"]
+    assert gov["direct_human_pct"] == 46
+    assert gov["ai_assisted_pct"] == 54
+    assert gov["pasted_pct"] == 0
+    assert gov["requires_disclosure"] is True
+    assert gov["authorship_status"] == "ok"
+
+    csv_out = export_cohort_summary_csv(dashboard)
+    assert "Beatriz Lima" in csv_out
+    assert "46%" in csv_out
+    assert "54%" in csv_out
+    assert "0%" in csv_out
+
+
+def test_cohort_authorship_categories_breakdown():
+    """Valida como direct_human_pct, ai_assisted_pct, pasted_pct e requires_disclosure tratam:
+    1. Revisão gramatical leve (ai_polish): isenta de declaração (COPE/ICMJE), não conta como humano puro.
+    2. Texto colado de fora (paste): NUNCA conta como IA nem como humano sem rótulo próprio (pasted_pct).
+    3. Rascunho de IA reescrito (ai_paraphrase): conta em ai_assisted_pct (ai_revised_pct) e exige declaração.
+    """
+    repo = InMemoryRepo()
+    advisor = repo.create_user("prof.orientador@universidade.br", "Prof. Orientador", hash_password("senha123"))
+    student = repo.create_user("aluno.autoria@universidade.br", "Rodrigo Alves", hash_password("senha123"))
+
+    p = repo.create_project(student["id"], {
+        "title": "Projeto com Múltiplas Modalidades de Texto",
+        "work": "tcc",
+        "institution": "UFPE",
+    })
+    repo.invite_advisor(p["id"], advisor["email"], True)
+
+    # 1. Seção com texto colado de fora (20 palavras)
+    pasted_text = (
+        "O principio da dignidade humana constitui o nucleo axiológico fundamental sobre o qual se estruturam "
+        "todas as garantias constitucionais vigentes."
+    )
+    pasted_words_count = len(pasted_text.split()) # 20 palavras
+    sec1 = repo.create_section(p["id"], "Fundamentação", None, 1, content={
+        "type": "doc",
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": pasted_text}]}]
+    })
+    # Evento de paste não declarado
+    repo.add_provenance_event(
+        p["id"], sec1["id"], "paste", "client_paste", pasted_words_count, pasted_text, {}, student["email"]
+    )
+
+    # 2. Seção com redação humana direta (20 palavras: exatamente igual à contagem de palavras do texto colado)
+    human_text = (
+        "Diante desse panorama observamos que a jurisprudencia brasileira recente tem aplicado tal principio "
+        "de maneira uniforme nos tribunais superiores atuais."
+    )
+    repo.create_section(p["id"], "Análise", None, 2, content={
+        "type": "doc",
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": human_text}]}]
+    })
+
+    dashboard = compute_cohort_dashboard(repo, advisor["email"])
+    s_data = dashboard["students"][0]
+    gov = s_data["governance"]
+
+    # Total = 40 palavras: 20 coladas (50%), 20 humanas (50%), 0 IA (0%)
+    assert gov["direct_human_pct"] == 50
+    assert gov["pasted_pct"] == 50
+    assert gov["ai_assisted_pct"] == 0
+    # Texto colado de fora não declarado EXIGE declaração e tem rótulo próprio!
+    assert gov["requires_disclosure"] is True
+
+    # Confirma que o CSV separa claramente humano, IA e colado de fora
+    csv_out = export_cohort_summary_csv(dashboard)
+    assert "Rodrigo Alves" in csv_out
+    assert "50%" in csv_out # Humano
+    assert "0%" in csv_out  # IA
+    assert "50%" in csv_out # Colado de fora
+
+
+def test_cohort_banca_failure_returns_indisponivel(monkeypatch):
+    """Garante que falha na leitura das sessões de banca não passe em silêncio:
+    marca banca_status='indisponivel', grava o erro no error_events e exibe 'Indisponível' no CSV.
+    """
+    repo = InMemoryRepo()
+    advisor = repo.create_user("prof.orientador@universidade.br", "Prof. Orientador", hash_password("senha123"))
+    student = repo.create_user("aluno.banca@universidade.br", "Juliana Souza", hash_password("senha123"))
+
+    p = repo.create_project(student["id"], {
+        "title": "Projeto com Falha na Banca",
+        "work": "tcc",
+        "institution": "UFRGS",
+    })
+    repo.invite_advisor(p["id"], advisor["email"], True)
+
+    def _failing_banca(*args, **kwargs):
+        raise ConnectionError("Falha de conexão com a tabela de banca simulada")
+
+    monkeypatch.setattr(repo, "list_banca_sessions", _failing_banca)
+
+    dashboard = compute_cohort_dashboard(repo, advisor["email"])
+    s_data = dashboard["students"][0]
+    gov = s_data["governance"]
+
+    assert gov["banca_status"] == "indisponivel"
+    assert gov["banca_verdict"] is None
+    assert gov["banca_score"] is None
+
+    # CSV deve exibir 'Indisponível' na coluna de banca
+    csv_out = export_cohort_summary_csv(dashboard)
+    assert "Juliana Souza" in csv_out
+    assert "Indisponível" in csv_out
+    assert "Não realizada" not in csv_out
+
+    # Erro deve estar gravado no error_events
+    errs = repo.list_error_events()
+    assert any(e["source"] == "cohort" and "ConnectionError" in e["error_type"] for e in errs)
+
+
+
+def test_cohort_authorship_failure_returns_indisponivel(monkeypatch):
+    repo = InMemoryRepo()
+    advisor = repo.create_user("prof.orientador@universidade.br", "Prof. Orientador", hash_password("senha123"))
+    student = repo.create_user("aluna.erro@universidade.br", "Larissa Rocha", hash_password("senha123"))
+
+    p = repo.create_project(student["id"], {
+        "title": "Projeto com Falha no Calculo",
+        "work": "tcc",
+        "institution": "UNICAMP",
+    })
+    repo.invite_advisor(p["id"], advisor["email"], True)
+
+    def _failing_authorship(*args, **kwargs):
+        raise RuntimeError("Corrupted provenance database or AST error")
+
+    monkeypatch.setattr("services.pipeline.app.cohort.compute_project_authorship", _failing_authorship)
+
+    dashboard = compute_cohort_dashboard(repo, advisor["email"])
+    assert len(dashboard["students"]) == 1
+    s_data = dashboard["students"][0]
+
+    gov = s_data["governance"]
+    # Never return favorable default (100% human)
+    assert gov["direct_human_pct"] is None
+    assert gov["ai_assisted_pct"] is None
+    assert gov["requires_disclosure"] is None
+    assert gov["authorship_status"] == "indisponivel"
+
+    # Verify CSV export displays "Indisponível" instead of a percentage
+    csv_out = export_cohort_summary_csv(dashboard)
+    assert "Larissa Rocha" in csv_out
+    assert "Indisponível" in csv_out
+    assert "100%" not in csv_out
+
+    # Verify error was recorded in repo error_events
+    error_events = repo.list_error_events()
+    assert len(error_events) >= 1
+    assert error_events[0]["source"] == "cohort"
+    assert "RuntimeError" in error_events[0]["error_type"]
+    assert "cohort/compute_student_overview" in error_events[0]["route"]
+

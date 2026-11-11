@@ -138,7 +138,9 @@ def build_docx_manuscript(
         lim = ("Limites deste registro: ele reflete apenas o que foi gerado pela IA ou colado dentro da plataforma "
                "e o que o(a) autor(a) declarou. Texto escrito em outro lugar e digitado aqui não deixa rastro, e o "
                "registro não analisa estilo.")
-        if unreviewed_paraphrases:
+        if unreviewed_paraphrases is None:
+            lim += " Aviso de integridade: a verificação automatizada de paráfrases de IA estava indisponível no momento desta exportação."
+        elif unreviewed_paraphrases > 0:
             lim += (f" No momento da exportação, {unreviewed_paraphrases} trecho(s) pareciam reescrita de rascunhos de IA e "
                     "não foram revisados pelo(a) autor(a); por isso não estão contados como revisão de IA.")
         p_lim.add_run(lim).italic = True

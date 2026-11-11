@@ -181,7 +181,7 @@ def register_routes(app: FastAPI, ctx: AppCtx) -> None:
                     rows.append({"section_id": sec["id"], "title": sec.get("title"), "count": len(found)})
                     total += len(found)
         except LLMUnavailable:
-            return {"available": False, "total": 0, "sections": []}
+            return {"available": False, "total": None, "sections": [], "notice": "Verificação de paráfrases indisponível no momento."}
         return {"available": True, "total": total, "sections": rows}
 
     @app.post("/projects/{project_id}/sections/{section_id}/provenance/paraphrases")

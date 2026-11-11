@@ -392,8 +392,12 @@ def register_routes(app: FastAPI, ctx: AppCtx) -> None:  # noqa: C901
         ascii_title = unicodedata.normalize("NFKD", raw_title).encode("ascii", "ignore").decode("ascii")
         clean_slug = re.sub(r"[^\w\-]+", "_", ascii_title).strip("_") or "trabalho"
         filename = f"{clean_slug}.docx"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Paraphrase-Verification": "available" if paraphrase_available else "unavailable",
+        }
         return Response(
             content=buf.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers=headers,
         )

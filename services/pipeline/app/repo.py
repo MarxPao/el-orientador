@@ -748,12 +748,21 @@ class InMemoryRepo:
         total_reports_generated = len(self.advisor_reports)
 
         ai_by_action = Counter(l.get("action", "outro") for l in self.ai_usage)
-        fb_count = len(self.beta_feedback)
-        avg_overall = round(sum(f["overall_rating"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
-        avg_gate = round(sum(f["socratic_gate_helpful"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
-        avg_evidence = round(sum(f["evidence_trust"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
-        avg_relief = round(sum(f["relief_level"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
-        pricing_dist = dict(Counter(f["pricing_preference"] for f in self.beta_feedback))
+        fb_status = "ok"
+        try:
+            fb_count = len(self.beta_feedback)
+            avg_overall = round(sum(f["overall_rating"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+            avg_gate = round(sum(f["socratic_gate_helpful"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+            avg_evidence = round(sum(f["evidence_trust"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+            avg_relief = round(sum(f["relief_level"] for f in self.beta_feedback) / fb_count, 2) if fb_count else 0.0
+            pricing_dist = dict(Counter(f["pricing_preference"] for f in self.beta_feedback))
+            brand_impr = [f["brand_impression"] for f in self.beta_feedback[-10:] if f.get("brand_impression")]
+        except Exception:
+            fb_status = "indisponivel"
+            fb_count = None
+            avg_overall = avg_gate = avg_evidence = avg_relief = None
+            pricing_dist = None
+            brand_impr = []
 
         return {
             "students_registered": total_students,
@@ -785,13 +794,14 @@ class InMemoryRepo:
             },
             "ai_usage": dict(ai_by_action),
             "feedback": {
+                "status": fb_status,
                 "total_responses": fb_count,
                 "average_overall_rating": avg_overall,
                 "average_socratic_gate_helpful": avg_gate,
                 "average_evidence_trust": avg_evidence,
                 "average_relief_level": avg_relief,
                 "pricing_preferences": pricing_dist,
-                "recent_brand_impressions": [f["brand_impression"] for f in self.beta_feedback[-10:]],
+                "recent_brand_impressions": brand_impr,
             },
             "pricing_validation": {
                 "hypothesis_a": "Passe por projeto (R$ 89 a R$ 149)",
@@ -1989,6 +1999,7 @@ class PostgresRepo:
 
             ai_rows = c.execute("SELECT action, count(*) FROM ai_usage_log GROUP BY action").fetchall()
             ai_by_action = {row[0]: row[1] for row in ai_rows}
+            fb_status = "ok"
             try:
                 fb_rows = c.execute("SELECT overall_rating, socratic_gate_helpful, evidence_trust, relief_level, pricing_preference, brand_impression FROM beta_feedback").fetchall()
                 fb_count = len(fb_rows)
@@ -2000,9 +2011,10 @@ class PostgresRepo:
                 pricing_dist = dict(Counter(r[4] for r in fb_rows))
                 brand_impr = [r[5] for r in fb_rows[-10:]]
             except Exception:
-                fb_count = 0
-                avg_overall = avg_gate = avg_evidence = avg_relief = 0.0
-                pricing_dist = {}
+                fb_status = "indisponivel"
+                fb_count = None
+                avg_overall = avg_gate = avg_evidence = avg_relief = None
+                pricing_dist = None
                 brand_impr = []
 
         return {
@@ -2035,6 +2047,7 @@ class PostgresRepo:
             },
             "ai_usage": ai_by_action,
             "feedback": {
+                "status": fb_status,
                 "total_responses": fb_count,
                 "average_overall_rating": avg_overall,
                 "average_socratic_gate_helpful": avg_gate,
